@@ -11,7 +11,7 @@ import {
   Paragraph,
   TextRun,
 } from 'docx';
-import type { AiSummaryResult } from '../summary/generate.js';
+import type { AiSummaryResult } from '../doc-intelligence/index.js';
 import type { Evidence, RunTrace, VersionId } from '../types.js';
 import {
   FULL_PAGE_LABEL,

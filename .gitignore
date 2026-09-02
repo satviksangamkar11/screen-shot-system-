@@ -16,8 +16,9 @@ auth/.storage/
 .DS_Store
 Thumbs.db
 
-# Machine-local Claude Code permissions; not shared.
-.claude/settings.local.json
+# Claude Code's own tool configuration — machine/session-local, not part of
+# this project's source.
+.claude/
 
 # External SAP documentation, sparse-cloned locally for research reference
 # only — not part of this project's source, and its own nested .git makes it

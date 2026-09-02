@@ -13,7 +13,6 @@ Automates a real browser against an enterprise web application (SAP Fiori / UI5 
 - Five **technology adapters**, tried in priority order, each claiming the controls it recognizes: UI5 framework → `@ui5/webcomponents` → Web Dynpro ABAP → WebGUI/ITS → generic ARIA/DOM fallback.
 - A control becomes a **documentation point** only if interacting with it reveals something worth a screenshot (dropdown, calendar, lookup, checkbox, file upload, or a button that opens new UI) — plain text fields are filled but not separately screenshotted.
 - **AI Summary** is a fully deterministic pipeline (`src/doc-intelligence/`) — builds a structured model from the capture trace, derives facts, renders 3–8 TL;DR points. **No LLM, no vision model, no network call, no API key required.**
-- An older vision-LLM-based summary path (`src/summary/`, `src/router/`) still exists in the tree but is **not called by anything live** — see [Dead code](#dead-and-superseded-code).
 - Runs as a **shared web server**: each browser gets its own cookie-isolated session, no cross-user leakage.
 - Also runs from the **CLI** against a named `config/apps/<app>.yaml`, for repeatable/scripted captures.
 
@@ -328,13 +327,7 @@ appended into the .docx via assembleDocument(), in place
 - **Multiset matching, never positional**: sections/containers/controls are matched by `kind + label` across two captures — never paired by list position. A 1:1 match is `CONFIRMED`; an N:M mismatch is `COMPOSITION_CHANGE`; a section with zero defensible correspondence is `UNRESOLVED` — an honest "can't tell" answer, not a guess.
 - **Junk labels don't delete nodes.** A meaningless label (`"."`, a bare icon) anonymizes the node — it's still counted structurally, just excluded from named facts.
 - Toggle in the web UI: **AI Summary**. Optional — off by default, failure never blocks the main document.
-
-### Dead and superseded code
-
-- `src/summary/generate.ts` (`generateAiSummary()`) and `src/summary/collect.ts` implement an **older, vision-LLM-based** summary pipeline. **Nothing in the live path calls them** — every importer only uses the shared `AiSummaryResult` type, never the function.
-- `src/router/*` (multi-provider free-tier LLM router: Gemini/Groq adapters, quota tracking, health tracking) is consequently **also dead in the live path** — its only caller was `summary/generate.ts`. Fully implemented and unit-tested (`npm run check:router`), but not reachable from any user-facing flow today.
-- `config/router/models.yaml` and `.env` API keys are only ever read if that dead path were reactivated.
-- These files remain in the tree but are **not** part of the live AI Summary feature — `doc-intelligence/*` is.
+- `AiPoint` / `AiSummaryResult` (the shared render contract) are defined in `doc-intelligence/index.ts` itself and consumed by `document/builder.ts`, `orchestrator/assemble.ts`, and `server/jobs.ts`.
 
 ---
 
@@ -530,7 +523,7 @@ New-NetFirewallRule -DisplayName "UI Documentation Engine (port 5173)" `
 - The **web UI never reads YAML** — `server/adhoc.ts` builds an `AppConfig` in-memory from pasted URLs.
 - Dates support `today` and relative offsets (`+30d`, `-1m`, `+1y`), and ranges (`today..+30d`).
 - Value-help fields intentionally have no dummy value — the engine opens the lookup and selects a real row.
-- `config/router/models.yaml` and `.env` API keys exist in the tree but are **only read by the dead vision-LLM path** (§6) — not needed for anything in normal use.
+- **No API keys, no `.env` file needed for anything** — AI Summary is fully deterministic (§6).
 
 ---
 

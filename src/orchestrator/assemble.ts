@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { AppConfig } from '../config/schema.js';
 import { OUTPUT_DIR } from '../config/load.js';
 import { buildDocument } from '../document/builder.js';
-import type { AiSummaryResult } from '../summary/generate.js';
+import type { AiSummaryResult } from '../doc-intelligence/index.js';
 import type { Evidence, RunTrace, VersionId } from '../types.js';
 import { log } from '../util/logger.js';
 

@@ -1,6 +1,6 @@
 import type { DocFact } from './facts.js';
 
-/** Matches the `AiPoint` shape in src/summary/generate.ts. */
+/** Matches the `AiPoint` shape in ./index.ts. */
 export interface RenderedPoint {
   text: string;
   importance: 'high' | 'medium';

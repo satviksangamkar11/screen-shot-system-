@@ -17,8 +17,7 @@
     "serve": "tsx src/index.ts serve",
     "cli": "tsx src/index.ts",
     "check:selectors": "tsx tools/dev-checks/selector-engine.ts",
-    "check:lsdata": "tsx tools/dev-checks/lsdata.ts",
-    "check:router": "tsx tools/dev-checks/router-smoke.ts"
+    "check:lsdata": "tsx tools/dev-checks/lsdata.ts"
   },
   "dependencies": {
     "commander": "^12.1.0",

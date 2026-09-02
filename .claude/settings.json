@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(awk '{print $NF}')",
-      "Bash(xargs -I {} taskkill //PID {} //T //F)",
-      "Bash(npm run *)"
-    ]
-  }
-}

@@ -10,8 +10,7 @@ import type { AppConfig } from '../config/schema.js';
 import type { VersionId } from '../types.js';
 import { addLogSink, log } from '../util/logger.js';
 import { InMemoryManualGate, type ManualQueueItem } from '../state/manualGate.js';
-import { type AiSummaryResult } from '../summary/generate.js';
-import { generateDocumentationPoints } from '../doc-intelligence/index.js';
+import { generateDocumentationPoints, type AiSummaryResult } from '../doc-intelligence/index.js';
 import { RemoteControl } from './remoteControl.js';
 import {
   buildAdHocConfig,

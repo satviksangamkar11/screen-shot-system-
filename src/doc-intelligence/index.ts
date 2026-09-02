@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { OUTPUT_DIR } from '../config/load.js';
-import type { AiSummaryResult } from '../summary/generate.js';
 import type { RunTrace, VersionId } from '../types.js';
 import { buildDocumentationModel } from './build-model.js';
 import { diffModels } from './diff.js';
@@ -9,16 +8,32 @@ import { deriveFacts } from './facts.js';
 import { detectPatterns } from './patterns.js';
 import { renderSinglePoints } from './templates.js';
 
+/** One rendered documentation point in an `AiSummaryResult`. */
+export interface AiPoint {
+  text: string;
+  importance: 'high' | 'medium' | 'low';
+  /** Comparison mode only: "added" | "removed" | "changed" | "state" | "structure" */
+  category?: string;
+}
+
+/** The contract `document/builder.ts` renders as the AI Summary section. */
+export interface AiSummaryResult {
+  type: 'single' | 'comparison';
+  points: AiPoint[];
+  /** Comparison mode only. */
+  overallChange?: {
+    level: 'no_change' | 'minor' | 'moderate' | 'major';
+    text: string;
+  };
+}
+
 /**
  * Deterministic documentation-intelligence entry point.
  *
- * Produces the same `AiSummaryResult` contract as `generateAiSummary()` in
- * `src/summary/generate.ts`, but from structured trace facts rather than from
- * screenshots re-analyzed by a vision model.
- *
- * Normal path: zero vision calls, zero LLM calls (the optional wording-polish
- * step from plan stage 17 has not been wired in yet — the plan says to
- * evaluate whether templates alone are good enough before adding it).
+ * Derives documentation points from structured trace facts — zero vision
+ * calls, zero LLM calls (the optional wording-polish step from plan stage 17
+ * has not been wired in yet — the plan says to evaluate whether templates
+ * alone are good enough before adding it).
  */
 export async function generateDocumentationPoints(
   runIds: Partial<Record<VersionId, string>>,
