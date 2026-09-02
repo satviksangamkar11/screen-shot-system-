@@ -119,6 +119,7 @@ export async function captureVersion(
     screenshotsCaptured: counts.screenshots,
     branchesExplored: stats.branchesExplored,
     exceptions: store.getExceptions(),
+    safetySkipped: store.getSafetySkipped(),
     budgetStops: stats.budgetStops,
   };
 

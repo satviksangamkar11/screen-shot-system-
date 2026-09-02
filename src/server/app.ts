@@ -10,6 +10,7 @@ import {
   getRemoteControl,
   getStandaloneLoginOutcome,
   hasSessionFor,
+  requestAiSummary,
   resolveManualStep,
   startJob,
   startStandaloneLogin,
@@ -256,7 +257,18 @@ async function handle(
       dataEntryMode: job.dataEntryMode,
       manualQueue: job.manualQueue,
       activeManualId: job.activeManualId ?? null,
+      aiSummaryStatus: job.aiSummaryStatus ?? null,
+      aiSummary: job.aiSummary ?? null,
+      aiSummaryError: job.aiSummaryError ?? null,
     });
+  }
+
+  // --- AI summary: turned on by the frontend's "AI Summary" toggle ----------
+  const aiSummaryMatch = /^\/api\/jobs\/([a-z0-9-]+)\/ai-summary$/i.exec(route);
+  if (req.method === 'POST' && aiSummaryMatch) {
+    const result = requestAiSummary(aiSummaryMatch[1]!);
+    if (!result.ok) return sendJson(res, 409, { error: result.error });
+    return sendJson(res, 202, { ok: true });
   }
 
   // --- manual data-entry confirmation ----------------------------------------

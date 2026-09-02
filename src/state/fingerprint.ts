@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Page } from '../automation/types.js';
-import { hasUi5, ui5Fingerprint } from '../discovery/ui5-probe.js';
-import { domFingerprint } from '../discovery/dom-probe.js';
+import { primaryFingerprint } from '../discovery/fingerprint.js';
 
 /**
  * State identity for loop protection.
@@ -14,11 +13,7 @@ import { domFingerprint } from '../discovery/dom-probe.js';
 export async function fingerprintState(page: Page): Promise<string> {
   const parts: string[] = [];
 
-  if (await hasUi5(page)) {
-    parts.push(await ui5Fingerprint(page));
-  } else {
-    parts.push(await domFingerprint(page));
-  }
+  parts.push(await primaryFingerprint(page));
 
   parts.push(await page.title().catch(() => ''));
   parts.push(stripVolatile(page.url()));

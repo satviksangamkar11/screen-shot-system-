@@ -3,163 +3,22 @@ import type { ControlDescriptor, ControlKind } from '../types.js';
 import { POINT_KINDS } from '../types.js';
 import type { AppConfig } from '../config/schema.js';
 import { canonicalise, hasMeaningfulLabel, type LabelResolver } from './labels.js';
-import { probeUi5Controls, hasUi5, type Ui5RawControl } from './ui5-probe.js';
-import { probeDomControls, type DomRawControl } from './dom-probe.js';
+import { ADAPTERS } from './adapters/registry.js';
 import { log } from '../util/logger.js';
 
 /**
  * Turns raw probe output into typed `ControlDescriptor`s.
  *
- * Classification is a lookup, not an inference: the UI5 control type maps
- * directly to a `ControlKind`, which in turn decides whether the control earns a
- * documentation point. Buttons are the sole exception — whether a button reveals
- * new UI can only be determined by clicking it, so they are provisionally typed
- * here and resolved later by the interaction layer.
+ * Classification is a lookup, not an inference: each adapter maps its raw
+ * control directly to a `ControlKind`, which in turn decides whether the
+ * control earns a documentation point. Buttons are the sole exception —
+ * whether a button reveals new UI can only be determined by clicking it, so
+ * they are provisionally typed here and resolved later by the interaction
+ * layer.
+ *
+ * This file knows nothing about any one technology — see
+ * `adapters/registry.ts` for the ordered list it walks.
  */
-
-/** Maps a UI5 control type to its documentation kind. */
-function kindFromUi5(c: Ui5RawControl): ControlKind {
-  const type = c.controlType.split('.').pop() ?? '';
-
-  // A non-editable control is evidence-free by rule: read-only fields are skipped.
-  const inert = !c.enabled || !c.editable;
-
-  switch (type) {
-    case 'Input':
-      if (inert) return 'readonly';
-      return c.showValueHelp ? 'valueHelp' : 'input';
-    case 'SearchField':
-      return inert ? 'readonly' : 'input';
-    case 'TextArea':
-      return inert ? 'readonly' : 'textarea';
-    case 'StepInput':
-      return inert ? 'readonly' : 'input';
-    case 'Select':
-    case 'ComboBox':
-      return inert ? 'readonly' : 'select';
-    case 'MultiComboBox':
-    case 'MultiInput':
-      return inert ? 'readonly' : 'multiSelect';
-    case 'DatePicker':
-    case 'DateTimePicker':
-    case 'TimePicker':
-      return inert ? 'readonly' : 'date';
-    case 'DateRangeSelection':
-      return inert ? 'readonly' : 'dateRange';
-    case 'CheckBox':
-    case 'Switch':
-      return inert ? 'readonly' : 'checkbox';
-    case 'RadioButton':
-      return inert ? 'readonly' : 'radio';
-    case 'FileUploader':
-    case 'UploadSet':
-      return inert ? 'readonly' : 'fileUpload';
-    case 'IconTabFilter':
-      // A disabled tab cannot be entered, so it is not a branch to explore.
-      return c.enabled ? 'tab' : 'readonly';
-    case 'Button':
-    case 'ToggleButton':
-    case 'SegmentedButton':
-    case 'Link':
-    case 'MenuButton':
-    case 'MenuItem':
-      // Provisional: whether these reveal something is only known by clicking,
-      // resolved by the same click-and-diff logic used for buttons.
-      return inert ? 'readonly' : 'actionButton';
-    case 'ObjectListItem':
-    case 'StandardListItem':
-    case 'ColumnListItem':
-    case 'CustomListItem':
-    case 'GroupHeaderListItem':
-      /*
-       * Rows of a sap.m.List/Table are selection data, not UI to document --
-       * confirmed on a live capture (Delivery Plant value-help): the dialog's
-       * result list rendered ~600 rows, every one classified as actionButton,
-       * queuing each for an individual click-and-diff probe. That list is
-       * virtualized, so a row's DOM id gets recycled the moment anything
-       * scrolls or re-renders -- almost every queued row was already stale
-       * ("element no longer in the page") by the time its turn came, and
-       * clicking one for real would have committed a selection anyway
-       * (exactly what `selectFirstOption` exists to do deliberately, once).
-       * Not one of the control kinds "What becomes a documentation point"
-       * lists, so this earns no point and no exploration.
-       */
-      return 'unknown';
-    default:
-      return 'unknown';
-  }
-}
-
-/** Maps a plain DOM element to its documentation kind. */
-function kindFromDom(c: DomRawControl): ControlKind {
-  /*
-   * A lookup field's own <input> is deliberately rendered `readonly` by the
-   * framework -- confirmed on a live capture (Company Code, Sales Office
-   * Code): the underlying element carries `readonly="readonly"` even though
-   * the control is fully interactive through its value-help trigger, by
-   * design, to force entry through the popup rather than free typing. Tested
-   * before the general readonly exclusion below, or this path -- consulted
-   * whenever the UI5 registry hasn't already claimed the control -- silently
-   * classifies every value-help field as inert and never attempts it. A
-   * value-help field that is genuinely `disabled` (not merely read-only) is
-   * still excluded.
-   */
-  if (c.valueHelp) return c.disabled ? 'readonly' : 'valueHelp';
-
-  if (c.disabled || c.readOnly) return 'readonly';
-
-  if (c.tag === 'select') return 'select';
-  if (c.tag === 'textarea') return 'textarea';
-  if (c.role === 'tab') return 'tab';
-
-  if (c.tag === 'button' || c.role === 'button') return 'actionButton';
-
-  /*
-   * Links, menu items and expandable-section toggles all behave the same way
-   * for documentation purposes: clicking one either reveals something (a
-   * point) or does not (skipped), which is exactly what the provisional
-   * actionButton click-and-diff path already resolves.
-   */
-  if (
-    c.tag === 'a' ||
-    c.role === 'link' ||
-    c.role === 'menuitem' ||
-    c.role === 'menuitemcheckbox' ||
-    c.role === 'menuitemradio' ||
-    c.expandable
-  ) {
-    return 'actionButton';
-  }
-
-  if (c.tag === 'input') {
-    // valueHelp already handled above, ahead of the readonly exclusion.
-    switch (c.type) {
-      case 'checkbox':
-        return 'checkbox';
-      case 'radio':
-        return 'radio';
-      case 'date':
-      case 'datetime-local':
-      case 'month':
-      case 'week':
-      case 'time':
-        return 'date';
-      case 'file':
-        return 'fileUpload';
-      case 'submit':
-      case 'button':
-      case 'reset':
-        return 'actionButton';
-      default:
-        return 'input';
-    }
-  }
-
-  if (c.role === 'combobox') return 'select';
-  if (c.role === 'checkbox') return 'checkbox';
-  if (c.role === 'radio') return 'radio';
-  return 'unknown';
-}
 
 /** Normalises a label for comparison and exclusion matching. */
 function normalise(label: string): string {
@@ -167,10 +26,10 @@ function normalise(label: string): string {
 }
 
 /**
- * Discovers every control on the current page, UI5-first with a DOM fallback.
+ * Discovers every control on the current page by walking `ADAPTERS` in order.
  *
- * Elements already described by the UI5 registry are not re-added from the DOM
- * probe, so each control yields exactly one descriptor.
+ * Elements already described by an earlier adapter are not re-added by a
+ * later one, so each control yields exactly one descriptor.
  */
 export async function discoverControls(
   page: Page,
@@ -181,70 +40,58 @@ export async function discoverControls(
   const claimedDomIds = new Set<string>();
   const excluded = new Set(app.excludeLabels.map((l) => normalise(l).toLowerCase()));
 
-  const ui5IsPresent = await hasUi5(page);
-  let ui5Found = 0;
-  let domFound = 0;
-  let domSkippedAsClaimed = 0;
+  const foundByAdapter: number[] = [];
+  let totalSkippedAsClaimed = 0;
 
-  if (ui5IsPresent) {
-    const ui5Controls = await probeUi5Controls(page);
-    ui5Found = ui5Controls.length;
-    for (const c of ui5Controls) {
-      const kind = kindFromUi5(c);
-      const rawLabel = normalise(c.label || c.text);
+  for (const adapter of ADAPTERS) {
+    const isPresent = await adapter.detect(page);
+    if (!isPresent) {
+      foundByAdapter.push(0);
+      continue;
+    }
+
+    const controls = await adapter.probe(page);
+    const allowIdSuffixFallback = adapter.supportsIdSuffixFallback !== false;
+    let found = 0;
+    for (const c of controls) {
+      // Skip anything an earlier adapter already described, including inner
+      // elements of a control it claimed (whose ids are prefixed with the
+      // control id).
+      if (c.domId && claimedDomIds.has(c.domId)) {
+        totalSkippedAsClaimed++;
+        continue;
+      }
+      if (c.domId && [...claimedDomIds].some((id) => c.domId.startsWith(`${id}-`))) {
+        totalSkippedAsClaimed++;
+        continue;
+      }
+      if (!c.selector) continue;
+
       if (c.domId) claimedDomIds.add(c.domId);
+      found++;
 
+      const kind = adapter.classify(c);
+      const container = adapter.containerType?.(c);
       out.push(
         makeDescriptor({
-          id: c.controlId || c.domId,
+          id: c.id,
           kind,
-          rawLabel,
+          rawLabel: normalise(c.label || c.text),
           section: normalise(c.section),
-          selector: c.controlId
-            ? `#${cssEscape(c.controlId)}`
-            : `#${cssEscape(c.domId)}`,
+          selector: c.selector,
           domOrder: c.domOrder,
           required: c.required,
           resolver,
           excluded,
           alreadyExpanded: c.alreadyExpanded,
-          ui5: { controlType: c.controlType, controlId: c.controlId },
+          allowIdSuffixFallback,
+          ...(c.inputType ? { inputType: c.inputType } : {}),
+          ...(c.title ? { title: c.title } : {}),
+          ...(container ? { containerType: container.type, containerLabel: normalise(container.label) } : {}),
         }),
       );
     }
-  }
-
-  const domControls = await probeDomControls(page);
-  for (const c of domControls) {
-    // Skip anything the UI5 probe already described, including inner elements of
-    // a UI5 control (whose ids are prefixed with the control id).
-    if (c.domId && claimedDomIds.has(c.domId)) {
-      domSkippedAsClaimed++;
-      continue;
-    }
-    if (c.domId && [...claimedDomIds].some((id) => c.domId.startsWith(`${id}-`))) {
-      domSkippedAsClaimed++;
-      continue;
-    }
-    if (!c.selector) continue;
-
-    domFound++;
-    const kind = kindFromDom(c);
-    out.push(
-      makeDescriptor({
-        id: c.domId || c.selector,
-        kind,
-        rawLabel: normalise(c.label || c.text),
-        section: normalise(c.section),
-        selector: c.selector,
-        domOrder: c.domOrder,
-        required: c.required,
-        resolver,
-        excluded,
-        alreadyExpanded: c.expandable && c.expanded,
-        ...(c.type ? { inputType: c.type } : {}),
-      }),
-    );
+    foundByAdapter.push(found);
   }
 
   const byKind = new Map<ControlKind, number>();
@@ -258,8 +105,8 @@ export async function discoverControls(
     .map(([kind, n]) => `${kind}:${n}`)
     .join(' ');
   log.debug(
-    `  [discover] ui5=${ui5Found}${ui5IsPresent ? '' : ' (no UI5 runtime)'} dom=${domFound} ` +
-      `(${domSkippedAsClaimed} already claimed by UI5) total=${out.length} points=${pointCount} — ${kindSummary}`,
+    `  [discover] ${foundByAdapter.join('+')} (${totalSkippedAsClaimed} already claimed) ` +
+      `total=${out.length} points=${pointCount} — ${kindSummary}`,
   );
 
   return out.sort((a, b) => a.domOrder - b.domOrder);
@@ -276,8 +123,12 @@ function makeDescriptor(args: {
   resolver: LabelResolver;
   excluded: Set<string>;
   alreadyExpanded?: boolean;
-  ui5?: { controlType: string; controlId: string };
   inputType?: string;
+  title?: string;
+  containerType?: ControlDescriptor['containerType'];
+  containerLabel?: string;
+  /** See `TechnologyAdapter.supportsIdSuffixFallback`. */
+  allowIdSuffixFallback: boolean;
 }): ControlDescriptor {
   const label = args.rawLabel;
   const canonicalLabel = canonicalise(label, args.resolver);
@@ -294,7 +145,9 @@ function makeDescriptor(args: {
   const hasLabel =
     hasMeaningfulLabel(canonicalLabel) || hasMeaningfulLabel(label);
 
-  const fallbackSelector = stableIdSelector(args.id);
+  const fallbackSelector = args.allowIdSuffixFallback
+    ? stableIdSelector(args.id)
+    : undefined;
 
   const descriptor: ControlDescriptor = {
     id: args.id,
@@ -311,7 +164,9 @@ function makeDescriptor(args: {
   };
   if (args.alreadyExpanded) descriptor.alreadyExpanded = true;
   if (args.section) descriptor.section = args.section;
-  if (args.ui5) descriptor.ui5 = args.ui5;
+  if (args.title) descriptor.title = args.title;
+  if (args.containerType) descriptor.containerType = args.containerType;
+  if (args.containerLabel) descriptor.containerLabel = args.containerLabel;
   return descriptor;
 }
 
@@ -391,9 +246,4 @@ function stableIdSelector(id: string): string | undefined {
   const stable = stableIdSuffix(id);
   if (!stable) return undefined;
   return `[id$="${stable.replace(/["\\]/g, '\\$&')}"]`;
-}
-
-/** CSS.escape equivalent for building selectors in Node. */
-function cssEscape(value: string): string {
-  return value.replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, '\\$1');
 }

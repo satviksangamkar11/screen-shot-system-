@@ -35,6 +35,7 @@ import {
   chooseOption,
   detectChooser,
   hideConsumedChooser,
+  waitForChooser,
   type DialogInfo,
 } from '../interaction/dialogs.js';
 import { waitForAppReady } from '../browser/readiness.js';
@@ -207,11 +208,33 @@ export class Explorer {
     await waitForStability(this.page, this.app.budgets.stabilityTimeoutMs);
 
     /*
+     * `run()` only dismisses message dialogs once, in `settle()`, before the
+     * very first `explore()` call. A validation message that renders after
+     * that check (a live capture showed "Both Account Group and Sales Org is
+     * mandatory" fully on screen at first-page-capture, never dismissed for
+     * the rest of the run) is invisible to `waitForChooser` below — it
+     * explicitly ignores message dialogs — so it sat blocking every control
+     * on the page for the whole run (0 controls discovered) with nothing
+     * ever trying its OK button again. Re-running the same dismissal here
+     * catches it before it can do that.
+     */
+    await acknowledgeMessageDialogs(this.page, {
+      stabilityMs: this.app.budgets.stabilityTimeoutMs,
+    });
+
+    /*
      * A chooser dialog asks which variant of the workflow to enter, so it is a
      * branch point rather than page content: each option is explored in full,
      * and the page behind the dialog is never documented on its own.
+     *
+     * A short, fixed window rather than a budget field: this is purely
+     * covering the render gap between the message dialog's dismissal above
+     * and a chooser's subsequent appearance, not a general "how long to wait
+     * for an interaction" concern — most pages have no chooser at all, and
+     * would otherwise pay this wait in full on every single visit if it were
+     * tied to a budget sized for real interactions.
      */
-    const chooser = await detectChooser(this.page);
+    const chooser = await waitForChooser(this.page, 6000);
     if (chooser && !this.budget.depthExhausted(depth)) {
       await this.exploreChooser(chooser, workflowPath, parentPageId, depth);
       return;
@@ -505,7 +528,7 @@ export class Explorer {
       if (!key || done.has(key)) continue;
       done.add(key);
 
-      const verdict = mayClick(label, this.app.safety);
+      const verdict = mayClick(label, this.app.safety, tab.title);
       if (!verdict.allowed) {
         log.debug(`skipping tab "${label}": ${verdict.reason}`);
         continue;
@@ -737,7 +760,7 @@ export class Explorer {
         pending = pending.filter((c) => {
           const isButton = c.kind === 'actionButton' || c.kind === 'revealButton';
           if (!isButton) return true;
-          return mayClick(c.label, this.app.safety).allowed;
+          return mayClick(c.label, this.app.safety, c.title).allowed;
         });
       }
 
@@ -862,9 +885,17 @@ export class Explorer {
     if (isButton) {
       /*
        * A button with no real wording cannot be safety-checked, and clicking it
-       * blind risks navigating away from the form being documented.
+       * blind risks navigating away from the form being documented. An
+       * icon-only button (no visible label at all) can still carry its
+       * meaning in `title` — a real tooltip, not a substitute label — so
+       * that counts too; `mayClick` itself is what actually checks it.
        */
-      if (!hasMeaningfulLabel(control.label)) return false;
+      if (
+        !hasMeaningfulLabel(control.label) &&
+        !hasMeaningfulLabel(control.title ?? '')
+      ) {
+        return false;
+      }
       // Dialog dismissal controls close the very UI being documented, and are
       // driven by the overlay helpers rather than processed as page content.
       if (isDismissLabel(control.label)) return false;
@@ -995,11 +1026,16 @@ export class Explorer {
          * showing the workflow rather than an incidental popup; anything that
          * is not a message (a picker, a lookup) is left alone, since that is
          * the evidence itself.
+         *
+         * Uses acknowledgeIfMessage's own tighter default rather than
+         * stabilityTimeoutMs: this is confirming a dialog closed, not waiting
+         * for the page to become navigable again, and re-raised JP-locale
+         * format-validation messages (phone/fax/address fields rejecting the
+         * generic 'TEST01' fallback) could otherwise burn the full
+         * page-navigation stability budget on each of up to 3 dismiss
+         * attempts, exceeding the flat 30s handler wrapper below.
          */
-        await acknowledgeIfMessage(
-          this.page,
-          this.app.budgets.stabilityTimeoutMs,
-        ).catch(() => false);
+        await acknowledgeIfMessage(this.page).catch(() => false);
 
         captured = true;
         record = await this.store.capture({
@@ -1010,6 +1046,8 @@ export class Explorer {
           interactionType,
           ...(tab ? { tab } : {}),
           ...(control.section ? { section: control.section } : {}),
+          ...(control.containerType ? { containerType: control.containerType } : {}),
+          ...(control.containerLabel ? { containerLabel: control.containerLabel } : {}),
           controlKind: control.kind,
         });
       },
@@ -1043,9 +1081,10 @@ export class Explorer {
       let result: HandlerResult;
       if (this.manualGate) {
         if (isProvisionalButton) {
-          const verdict = mayClick(control.label, this.app.safety);
+          const verdict = mayClick(control.label, this.app.safety, control.title);
           if (!verdict.allowed) {
             log.debug(`skipping unsafe button (manual mode): ${verdict.reason}`);
+            this.store.recordSafetySkip(control, verdict.reason);
             return { ok: true };
           }
         }
@@ -1055,7 +1094,18 @@ export class Explorer {
       } else {
         result = await withTimeout(
           handler(control, ctx),
-          this.app.budgets.controlTimeoutMs + 10_000,
+          /*
+           * +20s, not +10s: a handler's own click/fill/waitForStability calls
+           * are each already bounded by controlTimeoutMs/stabilityTimeoutMs,
+           * but capture() can additionally run acknowledgeMessageDialogs's
+           * up-to-3-iteration dismiss loop (see DIALOG_DISMISS_SETTLE_MS in
+           * interaction/dialogs.ts) after them. That loop is now capped
+           * cheaply per iteration, but this margin exists as a safety net for
+           * that combined worst case rather than the flat 10s pad -- a lone
+           * budget-sized wait was previously enough to blow a 30s wrapper on
+           * its own.
+           */
+          this.app.budgets.controlTimeoutMs + 20_000,
           `handler for "${control.label}"`,
         );
       }
@@ -1072,10 +1122,23 @@ export class Explorer {
         }
       }
 
-      if (result.note) {
+      if (result.safetySkipped) {
+        this.store.recordSafetySkip(
+          control,
+          result.note ?? 'blocked by safety policy',
+        );
+      }
+
+      if (captured) {
+        // Promoted from debug to ok: this is the one line that tells a
+        // normal user something was actually documented, so it must survive
+        // the default log level — previously it was filtered out entirely
+        // while every skip/warning below stayed visible, making a normal
+        // run's log read as an unbroken stream of negative-looking lines.
+        const name = control.canonicalLabel || control.label;
+        log.ok(result.note ? `captured "${name}" — ${result.note}` : `captured "${name}"`);
+      } else if (result.note) {
         log.debug(`  ${control.canonicalLabel || control.label}: ${result.note}`);
-      } else if (captured) {
-        log.debug(`  captured ${control.canonicalLabel || control.label}`);
       }
 
       /*
@@ -1093,13 +1156,13 @@ export class Explorer {
         const inScope = !this.rootScope || destination === this.rootScope;
 
         if (!inScope) {
-          log.warn(
-            `  "${childLabel}" left the application (now on ` +
-              `"${destination || '(no route)'}", expected "${this.rootScope}"); ` +
-              `capturing it but not exploring further.`,
-          );
+          // Expected boundary behaviour, not a failure — the link was
+          // captured (see ctx.capture() above), it just leads outside the
+          // application being documented, so it is not worth alarming a
+          // normal user with `warn`'s amber styling over.
+          log.info(`  "${childLabel}" leads outside this application; captured, not explored further.`);
         } else if (this.budget.depthExhausted(depth)) {
-          log.warn(`  not following "${childLabel}": depth budget reached`);
+          log.info(`  "${childLabel}" is past the exploration depth limit; captured, not explored further.`);
         } else {
           log.step(`Following navigation: ${childLabel}`);
           const childPath = [...workflowPath, childLabel];
@@ -1160,7 +1223,7 @@ export class Explorer {
       const label = branch.canonicalLabel || branch.label;
       if (!label.trim()) continue;
 
-      const verdict = mayClick(label, this.app.safety);
+      const verdict = mayClick(label, this.app.safety, branch.title);
       if (!verdict.allowed) {
         log.debug(`skipping branch "${label}": ${verdict.reason}`);
         continue;

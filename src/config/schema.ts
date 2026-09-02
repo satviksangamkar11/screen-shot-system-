@@ -45,8 +45,13 @@ export const SafetyPolicySchema = z.object({
 export const BudgetSchema = z.object({
   /** Milliseconds to wait for any single control interaction. */
   controlTimeoutMs: z.number().int().positive().default(20_000),
-  /** Maximum controls processed on a single page. */
-  maxControlsPerPage: z.number().int().positive().default(120),
+  /**
+   * Maximum controls processed on a single page. Unset by default — a page
+   * is fully explored regardless of how many controls it has. Set this only
+   * where a run genuinely needs bounding (e.g. a fixture deliberately
+   * testing the budget-stop mechanism).
+   */
+  maxControlsPerPage: z.number().int().positive().optional(),
   /** Maximum pages visited in one run. */
   maxPages: z.number().int().positive().default(50),
   /** Maximum recursion depth for nested branches. */

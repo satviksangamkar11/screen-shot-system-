@@ -61,6 +61,8 @@ export interface HandlerResult {
    * handled, or expanding the thing that was hiding it comes too late to help.
    */
   retryable?: boolean;
+  /** Set when the control was a button the safety policy refused to click. */
+  safetySkipped?: boolean;
 }
 
 export type Handler = (

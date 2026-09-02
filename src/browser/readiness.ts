@@ -18,6 +18,12 @@ export interface ReadinessSnapshot {
   interactive: number;
   visibleInputs: number;
   visibleButtons: number;
+  /**
+   * Visible custom elements (tag names containing a hyphen, per the Custom
+   * Elements spec) — covers web-component technologies the UI5 registry and
+   * plain `input`/`button` counts above know nothing about.
+   */
+  visibleCustomElements: number;
   busyIndicators: number;
   visibleDialogs: number;
   title: string;
@@ -127,6 +133,9 @@ export async function snapshotReadiness(page: Page): Promise<ReadinessSnapshot> 
         interactive,
         visibleInputs: q('input').filter(visible).length,
         visibleButtons: q('button').filter(visible).length,
+        visibleCustomElements: q('*')
+          .filter((el) => el.tagName.includes('-'))
+          .filter(visible).length,
         busyIndicators: q(
           '.sapUiLocalBusyIndicator, #sapUiBusyIndicator, .sapMBusyDialog, .sapUiBusy',
         ).filter(visible).length,
@@ -142,6 +151,7 @@ export async function snapshotReadiness(page: Page): Promise<ReadinessSnapshot> 
       interactive: 0,
       visibleInputs: 0,
       visibleButtons: 0,
+      visibleCustomElements: 0,
       busyIndicators: 0,
       visibleDialogs: 0,
       title: '',
@@ -184,11 +194,12 @@ export async function waitForAppReady(
       last.interactive > 0 ||
       last.visibleDialogs > 0 ||
       last.visibleInputs > 0 ||
-      last.visibleButtons >= 5;
+      last.visibleButtons >= 5 ||
+      last.visibleCustomElements > 0;
     const settled = last.busyIndicators === 0;
     const signature =
       `${last.renderedUi5}:${last.interactive}:${last.visibleDialogs}:` +
-      `${last.visibleInputs}:${last.visibleButtons}`;
+      `${last.visibleInputs}:${last.visibleButtons}:${last.visibleCustomElements}`;
 
     if (hasContent && !announced) {
       log.debug(

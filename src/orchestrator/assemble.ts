@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { AppConfig } from '../config/schema.js';
 import { OUTPUT_DIR } from '../config/load.js';
 import { buildDocument } from '../document/builder.js';
+import type { AiSummaryResult } from '../summary/generate.js';
 import type { Evidence, RunTrace, VersionId } from '../types.js';
 import { log } from '../util/logger.js';
 
@@ -16,7 +17,11 @@ import { log } from '../util/logger.js';
  */
 export async function assembleDocument(
   app: AppConfig,
-  opts: { runIds?: Partial<Record<VersionId, string>>; outputPath?: string } = {},
+  opts: {
+    runIds?: Partial<Record<VersionId, string>>;
+    outputPath?: string;
+    aiSummary?: AiSummaryResult;
+  } = {},
 ): Promise<string> {
   const traces: Partial<Record<VersionId, { trace: RunTrace; runDir: string }>> = {};
 
@@ -59,7 +64,7 @@ export async function assembleDocument(
   const outputPath =
     opts.outputPath ?? path.join(OUTPUT_DIR, `${safeName(app.title)}.docx`);
 
-  await buildDocument({ title: app.title, traces, outputPath });
+  await buildDocument({ title: app.title, traces, outputPath, aiSummary: opts.aiSummary });
   log.ok(`Document written: ${outputPath}`);
   return outputPath;
 }
@@ -135,6 +140,7 @@ async function synthesizeTraceFromScreenshots(
       screenshotsCaptured: evidence.length,
       branchesExplored: 0,
       exceptions: [],
+      safetySkipped: [],
       budgetStops: [],
     },
   };

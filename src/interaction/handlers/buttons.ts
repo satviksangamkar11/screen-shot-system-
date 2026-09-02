@@ -8,8 +8,7 @@ import {
 } from '../overlay.js';
 import { mayClick } from '../safety.js';
 import { acknowledgeMessageDialogs, inspectTopDialog } from '../dialogs.js';
-import { ui5Fingerprint } from '../../discovery/ui5-probe.js';
-import { domFingerprint } from '../../discovery/dom-probe.js';
+import { combinedFingerprint, visibleControlCount } from '../../discovery/fingerprint.js';
 import { log } from '../../util/logger.js';
 import {
   ensureInteractable,
@@ -30,13 +29,14 @@ export async function probeButton(
   control: ControlDescriptor,
   ctx: HandlerContext,
 ): Promise<HandlerResult> {
-  const verdict = mayClick(control.label, ctx.safety);
+  const verdict = mayClick(control.label, ctx.safety, control.title);
   if (!verdict.allowed) {
     log.debug(`skipping unsafe button: ${verdict.reason}`);
     return {
       documented: false,
       reclassifiedAs: 'actionButton',
       note: `not clicked (${verdict.reason})`,
+      safetySkipped: true,
     };
   }
 
@@ -49,14 +49,16 @@ export async function probeButton(
   if (blocked) return { ...blocked, reclassifiedAs: 'actionButton' };
 
   /*
-   * UI5 fingerprint alone misses a plain DOM change on a page with no UI5
-   * controls — a generic backdrop or panel appearing, for instance — so a
-   * general DOM fingerprint is combined in as well. Either signal changing
-   * counts as "revealed something".
+   * A framework-specific fingerprint alone misses a plain DOM change on a
+   * page with no such framework controls — a generic backdrop or panel
+   * appearing, for instance — so `combinedFingerprint` layers the generic
+   * DOM signal in as well. Either signal changing counts as "revealed
+   * something".
    */
   const snapshot = async () => ({
-    fingerprint: `${await ui5Fingerprint(ctx.page)}||${await domFingerprint(ctx.page)}`,
+    fingerprint: await combinedFingerprint(ctx.page),
     overlays: await overlayCount(ctx.page),
+    controls: await visibleControlCount(ctx.page),
     url: ctx.page.url(),
   });
 
@@ -109,6 +111,43 @@ export async function probeButton(
     await closeOverlay(ctx.page, undefined, baseline);
     await waitForStability(ctx.page, ctx.budgets.stabilityTimeoutMs);
     return { documented: true, reclassifiedAs: 'revealButton', note: 'opened dialog' };
+  }
+
+  if (!navigated && changed) {
+    /*
+     * A fingerprint changing only proves the visible control set is
+     * different — not whether it grew or shrank. A "Hide Navigation" toggle,
+     * an accordion collapse, or any other panel-hiding button changes the
+     * fingerprint exactly as much as a genuine reveal, and was being
+     * documented as one: confirmed against a real capture where clicking
+     * such a toggle was recorded as `revealButton`, and every sidebar
+     * control still queued for exploration then failed "element no longer
+     * in the page" one after another, burning the run's remaining time on
+     * controls that were never coming back — nothing from the page's actual
+     * content behind that sidebar was ever reached. See
+     * `visibleControlCount`'s own note for the full story.
+     *
+     * A collapse is many controls disappearing at once, not a field or two
+     * shifting position — the 60%-of-before / minimum-6 thresholds keep an
+     * ordinary "one field's dependents redrew" case (a handful of controls
+     * changing, not vanishing) from tripping this.
+     */
+    const shrank = before.controls >= 6 && after.controls <= before.controls * 0.6;
+    if (shrank) {
+      // Best-effort restore: click the same control again, since most such
+      // toggles flip back on a second press. Not verified any further — an
+      // app whose toggle does not restore on a second click is rare enough
+      // that guarding against it isn't worth the extra round trip here, and
+      // this is strictly better than leaving the run's queue depending on
+      // controls this collapse has already removed.
+      await loc.click({ timeout: ctx.budgets.controlTimeoutMs }).catch(() => undefined);
+      await waitForStability(ctx.page, ctx.budgets.stabilityTimeoutMs);
+      return {
+        documented: false,
+        reclassifiedAs: 'actionButton',
+        note: `collapsed UI (${before.controls} -> ${after.controls} visible controls); not documented, restore attempted`,
+      };
+    }
   }
 
   if (navigated || changed) {

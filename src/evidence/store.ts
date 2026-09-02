@@ -7,6 +7,7 @@ import type {
   ExceptionRecord,
   InteractionType,
   PageState,
+  SafetySkipRecord,
   VersionId,
 } from '../types.js';
 import { captureScrollSegments } from './scroll-capture.js';
@@ -23,6 +24,7 @@ export class EvidenceStore {
   private seq = 0;
   private readonly evidence: Evidence[] = [];
   private readonly exceptions: ExceptionRecord[] = [];
+  private readonly safetySkips: SafetySkipRecord[] = [];
   private readonly pages: PageState[] = [];
   private shotCount = 0;
 
@@ -80,6 +82,8 @@ export class EvidenceStore {
     interactionType: InteractionType;
     tab?: string;
     section?: string;
+    containerType?: ControlDescriptor['containerType'];
+    containerLabel?: string;
     controlKind?: ControlDescriptor['kind'];
   }): Promise<Evidence> {
     const seq = ++this.seq;
@@ -111,15 +115,21 @@ export class EvidenceStore {
           this.shotCount += segments.length;
         }
       } else {
-        await args.page.screenshot({
-          path: path.join(this.screenshotDir, fileName),
-          fullPage: false,
-          animations: 'disabled',
-        });
+        await screenshotWithRetry(args.page, path.join(this.screenshotDir, fileName));
         this.shotCount++;
       }
     } catch (err) {
-      log.warn(`screenshot failed for "${args.label}": ${errMsg(err)}`);
+      /*
+       * A screenshot failure here means this whole point silently loses its
+       * evidence: `assembleDocument` drops any point whose file doesn't
+       * exist on disk (see its "missing screenshot, skipping" path), so a
+       * transient CDP hiccup on one point quietly deletes it from the final
+       * document rather than merely logging a warning about it, which is
+       * why `screenshotWithRetry` gets one retry before this is reached at
+       * all — confirmed against a real capture where four of ten points
+       * were lost this way to `Page.captureScreenshot` timeouts.
+       */
+      log.warn(`screenshot failed for "${args.label}" (retried once): ${errMsg(err)}`);
     }
 
     const record: Evidence = {
@@ -142,6 +152,8 @@ export class EvidenceStore {
     }
     if (args.tab) record.tab = args.tab;
     if (args.section) record.section = args.section;
+    if (args.containerType) record.containerType = args.containerType;
+    if (args.containerLabel) record.containerLabel = args.containerLabel;
     if (args.controlKind) record.controlKind = args.controlKind;
 
     this.evidence.push(record);
@@ -260,12 +272,41 @@ export class EvidenceStore {
     log.warn(`  exception on "${record.label}" (${args.action}): ${record.message}`);
   }
 
+  /**
+   * Records a button the safety policy refused to click.
+   *
+   * A deny match is a deliberate, expected outcome — not a failure — so it
+   * is tracked separately from `exceptions` rather than folded into them.
+   */
+  recordSafetySkip(control: ControlDescriptor, reason: string): void {
+    const seq = ++this.seq;
+    /*
+     * An icon-only button resolves no visible label at all — its `title`
+     * is the only identifying text it has, and is exactly what the deny
+     * match itself was made against (see `ExtraDenyCheck`), so it is the
+     * right fallback rather than leaving this record unhelpfully blank.
+     */
+    const label = control.canonicalLabel || control.label || control.title || control.id;
+    this.safetySkips.push({
+      seq,
+      label,
+      controlKind: control.kind,
+      reason,
+      at: new Date().toISOString(),
+    });
+    log.debug(`  safety-skipped "${label}": ${reason}`);
+  }
+
   getEvidence(): Evidence[] {
     return [...this.evidence];
   }
 
   getExceptions(): ExceptionRecord[] {
     return [...this.exceptions];
+  }
+
+  getSafetySkipped(): SafetySkipRecord[] {
+    return [...this.safetySkips];
   }
 
   getPages(): PageState[] {
@@ -283,6 +324,28 @@ export class EvidenceStore {
     const file = path.join(this.runDir, 'report.json');
     await writeFile(file, JSON.stringify(report, null, 2), 'utf8');
     return file;
+  }
+}
+
+/**
+ * Takes a viewport screenshot, retrying once after a short wait on failure.
+ *
+ * `Page.captureScreenshot` (the underlying CDP call) occasionally times out
+ * on a page that is mid-render — an animation still settling, a dialog still
+ * transitioning in — even though the exact same shot succeeds a moment
+ * later. Without a retry that single transient failure loses the point
+ * outright: `capture()`'s caller records `Evidence` regardless, pointing at a
+ * file that was never written, and `assembleDocument` silently drops any
+ * point whose screenshot file doesn't exist rather than erroring — so one
+ * flaky CDP call turns into a point permanently missing from the final
+ * document with only a log line to explain why.
+ */
+async function screenshotWithRetry(page: Page, filePath: string): Promise<void> {
+  try {
+    await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
+  } catch {
+    await new Promise((r) => setTimeout(r, 500));
+    await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
   }
 }
 

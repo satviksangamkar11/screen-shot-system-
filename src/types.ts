@@ -36,6 +36,18 @@ export type ControlKind =
   | 'unknown';
 
 /**
+ * The structural container a control sits inside — a form-like group, a
+ * table, a toolbar or a dialog — when the adapter's technology exposes
+ * enough structure to say so with confidence.
+ *
+ * Canonical home for this type: `doc-intelligence/model.ts`'s `ContainerNode`
+ * consumes exactly this value (re-exported there, not redeclared), so a
+ * container identity assigned here during discovery survives unchanged all
+ * the way to the diff engine's container-matching logic.
+ */
+export type ContainerType = 'group' | 'table' | 'toolbar' | 'dialog';
+
+/**
  * Control kinds that produce a documentation point (label + screenshot).
  *
  * Every control that opens meaningful UI, plus the fillable controls whose
@@ -154,11 +166,26 @@ export interface ControlDescriptor {
    * documented as before.
    */
   alreadyExpanded?: boolean;
-  /** UI5 metadata when the control came from the UI5 registry. */
-  ui5?: {
-    controlType: string;
-    controlId: string;
-  };
+  /**
+   * The element's HTML `title` attribute, when discovery captured one.
+   *
+   * Exists because a control's meaningful text does not always live in its
+   * visible label — an icon-only toolbar button carries its purpose only in
+   * its tooltip. Any adapter may populate this; nothing here is specific to
+   * one technology. See `interaction/safety.ts`'s `ExtraDenyCheck` for the
+   * consumer this exists for.
+   */
+  title?: string;
+  /**
+   * The structural container this control sits inside (its nearest table,
+   * form group, toolbar or dialog), when the owning adapter's `containerType`
+   * hook could establish one with confidence. Absent, not guessed, when it
+   * can't — see `TechnologyAdapter.containerType` in
+   * `discovery/adapters/core/adapter.ts`.
+   */
+  containerType?: ContainerType;
+  /** The container's own label (e.g. a table's header text), paired with `containerType`. */
+  containerLabel?: string;
 }
 
 /** One captured piece of evidence: a label and its screenshot. */
@@ -183,6 +210,10 @@ export interface Evidence {
   tab?: string;
   /** Enclosing fieldset heading within the tab, e.g. "General". */
   section?: string;
+  /** The structural container this point's control sat inside; see `ControlDescriptor.containerType`. */
+  containerType?: ContainerType;
+  /** Paired with `containerType`; the container's own label, e.g. a table's header text. */
+  containerLabel?: string;
   label: string;
   canonicalLabel: string;
   interactionType: InteractionType;
@@ -229,6 +260,20 @@ export interface ExceptionRecord {
   at: string;
 }
 
+/**
+ * A button the safety policy refused to click, recorded rather than silently
+ * dropped — an icon-only toolbar button whose deny match came from its
+ * `title` rather than its visible label is exactly the case that is easy to
+ * lose track of otherwise.
+ */
+export interface SafetySkipRecord {
+  seq: number;
+  label: string;
+  controlKind: ControlKind;
+  reason: string;
+  at: string;
+}
+
 /** Internal audit information for one version run. */
 export interface ExecutionReport {
   runId: string;
@@ -245,6 +290,8 @@ export interface ExecutionReport {
   screenshotsCaptured: number;
   branchesExplored: number;
   exceptions: ExceptionRecord[];
+  /** Buttons the safety policy refused to click. */
+  safetySkipped: SafetySkipRecord[];
   /** Populated when a budget stopped exploration early. */
   budgetStops: string[];
 }

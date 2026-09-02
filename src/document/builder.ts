@@ -7,9 +7,11 @@ import {
   HeadingLevel,
   ImageRun,
   Packer,
+  PageBreak,
   Paragraph,
   TextRun,
 } from 'docx';
+import type { AiSummaryResult } from '../summary/generate.js';
 import type { Evidence, RunTrace, VersionId } from '../types.js';
 import {
   FULL_PAGE_LABEL,
@@ -51,6 +53,8 @@ export interface BuildOptions {
   /** Traces keyed by version. Either may be absent. */
   traces: Partial<Record<VersionId, { trace: RunTrace; runDir: string }>>;
   outputPath: string;
+  /** When provided, an "AI Summary" section is appended as the last page of the document. */
+  aiSummary?: AiSummaryResult;
 }
 
 /** Deepest level with a real Word heading style; beyond this, use bold text. */
@@ -102,6 +106,11 @@ export async function buildDocument(opts: BuildOptions): Promise<string> {
     );
 
     await renderNode(children, root, entry.runDir);
+  }
+
+  // AI Summary — appended as the last section when the caller supplies it.
+  if (opts.aiSummary) {
+    renderAiSummary(children, opts.aiSummary);
   }
 
   const doc = new Document({
@@ -257,6 +266,100 @@ function boldParagraph(text: string): Paragraph {
     spacing: { before: 250, after: 120 },
     children: [new TextRun({ text, bold: true })],
   });
+}
+
+const OVERALL_CHANGE_LABELS: Record<string, string> = {
+  no_change: 'No meaningful UI change',
+  minor: 'Minor UI change',
+  moderate: 'Moderate UI change',
+  major: 'Major UI change',
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  added: 'ADDED',
+  removed: 'REMOVED',
+  changed: 'CHANGED',
+  state: 'STATE',
+  structure: 'STRUCTURE',
+};
+
+/**
+ * Appends the AI UI Documentation section as the final page of the document.
+ *
+ * Single version: "AI UI DOCUMENTATION" heading + bullet points.
+ * Comparison:     "AI UI COMPARISON" heading + categorised bullet points
+ *                 + optional "OVERALL UI CHANGE" sub-heading.
+ *
+ * A page break precedes the section so it starts on a clean page.
+ */
+function renderAiSummary(out: Paragraph[], summary: AiSummaryResult): void {
+  // Page break before the AI section.
+  out.push(
+    new Paragraph({
+      spacing: { before: 0, after: 0 },
+      children: [new PageBreak()],
+    }),
+  );
+
+  const heading = summary.type === 'comparison' ? 'AI UI COMPARISON' : 'AI UI DOCUMENTATION';
+
+  out.push(
+    new Paragraph({
+      heading: HeadingLevel.HEADING_1,
+      alignment: AlignmentType.LEFT,
+      spacing: { before: 0, after: 300 },
+      children: [
+        new TextRun({ text: heading, size: TITLE_SIZE_HALF_POINTS, bold: true }),
+      ],
+    }),
+  );
+
+  for (const point of summary.points) {
+    // Build the bullet text. For comparison mode, prefix with "CATEGORY — ".
+    let text = point.text;
+    if (summary.type === 'comparison' && point.category) {
+      const label = CATEGORY_LABELS[point.category] ?? point.category.toUpperCase();
+      text = `${label} — ${text}`;
+    }
+
+    out.push(
+      new Paragraph({
+        spacing: { before: 80, after: 80 },
+        bullet: { level: 0 },
+        children: [new TextRun({ text, size: LABEL_SIZE_HALF_POINTS })],
+      }),
+    );
+  }
+
+  // OVERALL UI CHANGE — comparison only.
+  if (summary.type === 'comparison' && summary.overallChange) {
+    const { level, text } = summary.overallChange;
+    const levelLabel = OVERALL_CHANGE_LABELS[level] ?? level;
+
+    out.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 400, after: 120 },
+        children: [
+          new TextRun({ text: 'OVERALL UI CHANGE', size: VERSION_HEADING_SIZE_HALF_POINTS, bold: true }),
+        ],
+      }),
+    );
+    out.push(
+      new Paragraph({
+        spacing: { before: 60, after: 60 },
+        children: [new TextRun({ text: levelLabel, size: LABEL_SIZE_HALF_POINTS, bold: true })],
+      }),
+    );
+    if (text) {
+      out.push(
+        new Paragraph({
+          spacing: { before: 40, after: 40 },
+          children: [new TextRun({ text, size: LABEL_SIZE_HALF_POINTS })],
+        }),
+      );
+    }
+  }
 }
 
 /** Red 16pt label, matching the reference documents. */

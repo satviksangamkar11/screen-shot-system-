@@ -13,8 +13,37 @@ export type ClickVerdict =
   | { allowed: true }
   | { allowed: false; reason: string };
 
-/** Decides whether a button with this label may be clicked. */
-export function mayClick(label: string, policy: SafetyPolicy): ClickVerdict {
+/**
+ * An additional deny check an adapter can register, consulted after the
+ * generic label match. Exists because a control's meaningful text does not
+ * always live in the visible label discovery resolved — an icon-only
+ * toolbar button whose only textual identity is its `title` attribute is
+ * the motivating case (see `adapters/webgui/safety.ts`). Returning `null`
+ * defers to the generic verdict; returning a deny overrides it.
+ */
+export type ExtraDenyCheck = (
+  ctx: { label: string; title?: string },
+  policy: SafetyPolicy,
+) => ClickVerdict | null;
+
+const extraDenyChecks: ExtraDenyCheck[] = [];
+
+/**
+ * Registers an adapter-specific deny check, consulted by every future
+ * `mayClick` call. Adapters call this once at module load — see
+ * `adapters/webgui/index.ts`.
+ */
+export function registerExtraDenyCheck(check: ExtraDenyCheck): void {
+  extraDenyChecks.push(check);
+}
+
+/** Decides whether a button with this label (and optional tooltip) may be clicked. */
+export function mayClick(label: string, policy: SafetyPolicy, title?: string): ClickVerdict {
+  for (const check of extraDenyChecks) {
+    const verdict = check({ label, title }, policy);
+    if (verdict && !verdict.allowed) return verdict;
+  }
+
   const text = label.trim().toLowerCase();
   if (!text) return { allowed: true };
 

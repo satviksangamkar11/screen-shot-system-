@@ -20,6 +20,27 @@ import { log } from '../util/logger.js';
 const ACKNOWLEDGE_LABELS = ['ok', 'close', 'dismiss', 'continue', 'got it'];
 const CANCEL_LABELS = ['cancel', 'back', 'no'];
 
+/*
+ * Post-dismiss settle wait used inside the acknowledge loop below. This is
+ * confirming a dialog closed, not waiting for the page to become navigable
+ * again -- a much cheaper bar than `stabilityTimeoutMs`, which is sized for
+ * post-navigation settling. Using the full budget here was the actual cause
+ * of a 30s handler-wrapper timeout on live capture: JP-locale phone/fax/
+ * address fields re-raise a format-validation message on every dismiss
+ * attempt (the generic 'TEST01' fallback is not a valid phone number or
+ * address), so `acknowledgeMessageDialogs`'s up-to-3 iterations each paid a
+ * full `stabilityTimeoutMs` (15s default) even though the field itself had
+ * already been filled and committed in well under a second -- three
+ * iterations alone could cost ~45s against a 30s wrapper. Confirmed against
+ * report.json + exc-0024/exc-0025 screenshots from
+ * output/runs/job-092104d1-new-20260831180638: value already filled, focus
+ * already on the next field, no dialog visible in the exception screenshot --
+ * consistent with the real work finishing well after the flat wrapper's
+ * `Promise.race` had already timed out and moved on (the loser promise keeps
+ * running in the background; nothing cancels it).
+ */
+const DIALOG_DISMISS_SETTLE_MS = 2000;
+
 export interface DialogOption {
   label: string;
   /** Index within the dialog's actionable elements, used for clicking. */
@@ -92,36 +113,70 @@ function probeTopDialog(args: DialogProbeArgs): DialogProbeResult | null {
   };
   const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
-  const dialogs = Array.from(
-    document.querySelectorAll('.sapMDialog, [role="dialog"], dialog[open]'),
+  /*
+   * Recurses into every open shadow root reachable from `root`, so a web
+   * component's dialog/popover content is found the same way it is when a
+   * dialog is composed entirely of light-DOM markup. Mirrors the walk in
+   * `discovery/shared/shadow-walk.ts`, duplicated here rather than imported
+   * because this whole function is serialised to source for `page.evaluate`
+   * and cannot reference other modules.
+   */
+  const deepQueryAll = (root: ParentNode, selector: string): Element[] => {
+    const out: Element[] = [];
+    try {
+      out.push(...Array.from(root.querySelectorAll(selector)));
+    } catch {
+      /* invalid selector for this root; nothing to add */
+    }
+    for (const el of Array.from(root.querySelectorAll('*'))) {
+      const sr = (el as unknown as { shadowRoot: ShadowRoot | null }).shadowRoot;
+      if (sr) out.push(...deepQueryAll(sr, selector));
+    }
+    return out;
+  };
+
+  const dialogs = deepQueryAll(
+    document,
+    '.sapMDialog, [role="dialog"], dialog[open]',
   ).filter(visible) as HTMLElement[];
   if (dialogs.length === 0) return null;
 
-  // Topmost = greatest z-index, falling back to document order.
+  // Topmost = greatest z-index, falling back to document order. Walking past
+  // a shadow root's top follows its host, so a dialog nested inside a web
+  // component's shadow tree is still measured against its light-DOM ancestry.
   const top = dialogs
     .map((d) => {
       let z = 0;
-      let node: HTMLElement | null = d;
+      let node: Node | null = d;
       while (node) {
-        const v = parseInt(getComputedStyle(node).zIndex || '0', 10);
-        if (!Number.isNaN(v) && v > z) z = v;
-        node = node.parentElement;
+        if (node instanceof Element) {
+          const v = parseInt(getComputedStyle(node).zIndex || '0', 10);
+          if (!Number.isNaN(v) && v > z) z = v;
+          if (node.parentElement) {
+            node = node.parentElement;
+          } else {
+            const root = node.getRootNode();
+            node = root instanceof ShadowRoot ? root.host : null;
+          }
+        } else {
+          node = null;
+        }
       }
       return { d, z };
     })
     .sort((a, b) => a.z - b.z)
     .at(-1)!.d;
 
-  const titleEl = top.querySelector(
+  const titleEl = deepQueryAll(
+    top,
     '.sapMDialogTitle, .sapMTitle, h1, h2, h3, [role="heading"]',
-  );
-  const title = norm((titleEl as HTMLElement | null)?.innerText || '');
+  )[0];
+  const title = norm((titleEl as HTMLElement | undefined)?.innerText || '');
 
   // Everything the user could act on inside this dialog.
-  const actionables = Array.from(
-    top.querySelectorAll(
-      'button, [role="button"], li, .sapMSLI, .sapMLIB, tbody tr, [role="option"]',
-    ),
+  const actionables = deepQueryAll(
+    top,
+    'button, [role="button"], li, .sapMSLI, .sapMLIB, tbody tr, [role="option"]',
   ).filter(visible) as HTMLElement[];
 
   const seen: Record<string, boolean> = {};
@@ -160,14 +215,22 @@ function probeTopDialog(args: DialogProbeArgs): DialogProbeResult | null {
    * be exactly that shape while still containing real fields to explore
    * (inputs, selects, checkboxes). Fillable content always means it is
    * not a message, regardless of how few buttons it has.
+   *
+   * `[data-sap-day]` covers an open calendar popover: its day cells are
+   * plain, unlabelled elements with no `role` the `actionables` selector
+   * above would recognise, so without this an open calendar reads as zero
+   * actionables and zero fillable content -- indistinguishable from an
+   * empty message dialog, and gets dismissed by `acknowledgeMessageDialogs`
+   * (via Escape) before `pickCalendarDay` in interaction/handlers/fields.ts
+   * ever gets to click a day. Same attribute that function already keys on.
    */
   const hasFillableContent =
-    Array.from(
-      top.querySelectorAll(
-        'input:not([type="hidden"]):not([type="button"]):not([type="submit"]), ' +
-          'textarea, select, [contenteditable="true"], ' +
-          '[role="combobox"], [role="checkbox"], [role="radio"], [role="switch"]',
-      ),
+    deepQueryAll(
+      top,
+      'input:not([type="hidden"]):not([type="button"]):not([type="submit"]), ' +
+        'textarea, select, [contenteditable="true"], ' +
+        '[role="combobox"], [role="checkbox"], [role="radio"], [role="switch"], ' +
+        '[data-sap-day]',
     ).filter(visible).length > 0;
 
   let marked: string | null = null;
@@ -279,7 +342,7 @@ export async function acknowledgeMessageDialogs(
   opts: { max?: number; stabilityMs?: number } = {},
 ): Promise<string[]> {
   const max = opts.max ?? 6;
-  const stabilityMs = opts.stabilityMs ?? 6000;
+  const stabilityMs = opts.stabilityMs ?? DIALOG_DISMISS_SETTLE_MS;
   const acknowledged: string[] = [];
 
   for (let i = 0; i < max; i++) {
@@ -340,7 +403,7 @@ export async function acknowledgeMessageDialogs(
  */
 export async function acknowledgeIfMessage(
   page: Page,
-  stabilityMs = 6000,
+  stabilityMs = DIALOG_DISMISS_SETTLE_MS,
 ): Promise<boolean> {
   const dialog = await inspectTopDialog(page);
   if (!dialog || !dialog.isMessage) return false;
@@ -359,6 +422,33 @@ export async function detectChooser(page: Page): Promise<DialogInfo | null> {
   if (!dialog || dialog.isMessage) return null;
   if (dialog.options.length < 2) return null;
   return dialog;
+}
+
+/**
+ * Polls for a chooser dialog for a bounded time, rather than checking once.
+ *
+ * A message dialog's own dismissal and a chooser's subsequent appearance are
+ * two separate renders — confirmed on a live capture where the Customer
+ * Category chooser only appeared a few seconds after the entry validation
+ * message was acknowledged, well after `explore()`'s single check had
+ * already given up and started treating the page as ordinary content (0
+ * controls discovered, because everything was still behind the chooser that
+ * arrived moments later). A slower backend widens that gap further than a
+ * single check accounts for; polling here gives the render the time it
+ * needs, while a page with no chooser at all still only costs one bounded
+ * wait instead of hanging.
+ */
+export async function waitForChooser(
+  page: Page,
+  timeoutMs: number,
+): Promise<DialogInfo | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const chooser = await detectChooser(page);
+    if (chooser) return chooser;
+    if (Date.now() >= deadline) return null;
+    await page.waitForTimeout(400);
+  }
 }
 
 /**

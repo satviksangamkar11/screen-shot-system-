@@ -52,8 +52,9 @@ export class BudgetTracker {
     return false;
   }
 
-  /** True when a single page has consumed its control budget. */
+  /** True when a single page has consumed its control budget. Unbounded unless configured. */
   controlsExhausted(processed: number): boolean {
+    if (this.budgets.maxControlsPerPage === undefined) return false;
     if (processed >= this.budgets.maxControlsPerPage) {
       this.note(
         `per-page control budget reached (${this.budgets.maxControlsPerPage})`,

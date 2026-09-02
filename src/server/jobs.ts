@@ -10,6 +10,8 @@ import type { AppConfig } from '../config/schema.js';
 import type { VersionId } from '../types.js';
 import { addLogSink, log } from '../util/logger.js';
 import { InMemoryManualGate, type ManualQueueItem } from '../state/manualGate.js';
+import { type AiSummaryResult } from '../summary/generate.js';
+import { generateDocumentationPoints } from '../doc-intelligence/index.js';
 import { RemoteControl } from './remoteControl.js';
 import {
   buildAdHocConfig,
@@ -52,6 +54,8 @@ export interface Job {
   title: string;
   versions: VersionId[];
   dataEntryMode: 'automatic' | 'manual';
+  /** Original input retained so the document can be rebuilt (e.g. with AI Summary). */
+  input?: AdHocInput;
   log: JobLogLine[];
   error?: string;
   /** Set while a live view is open waiting for the operator to sign in. */
@@ -75,6 +79,12 @@ export interface Job {
     screenshots: number;
     exceptions: number;
   }[];
+  /** Capture run id per version, kept for the AI Summary feature (jobs.ts) — the document itself no longer needs these once written. */
+  runIds?: Partial<Record<VersionId, string>>;
+  /** Set only once the "AI Summary" toggle has actually been requested; absent means it was never asked for. */
+  aiSummaryStatus?: 'running' | 'done' | 'error';
+  aiSummary?: AiSummaryResult;
+  aiSummaryError?: string;
   startedAt: number;
   finishedAt?: number;
 }
@@ -136,6 +146,7 @@ export function startJob(input: AdHocInput): Job {
     title: app.title,
     versions,
     dataEntryMode: app.dataEntryMode,
+    input,
     manualQueue: [],
     log: [],
     startedAt: Date.now(),
@@ -357,6 +368,7 @@ async function runJob(job: Job, input: AdHocInput): Promise<void> {
     job.documentPath = outputPath;
     job.documentName = fileName;
     job.summary = summary;
+    job.runIds = runIds;
     job.status = 'done';
   } catch (err) {
     job.status = 'error';
@@ -421,6 +433,53 @@ export function startStandaloneLogin(url: string, userId?: string): string {
     });
 
   return id;
+}
+
+/**
+ * Starts AI Summary generation for a finished job, if it hasn't been started
+ * already (the toggle can fire more than once — e.g. the client re-sends on
+ * reconnect — and generation is not cheap or idempotent-safe to repeat).
+ * Callers read the result off the job via the existing status poll, the same
+ * pattern the rest of this file uses for everything else long-running.
+ */
+export function requestAiSummary(jobId: string): { ok: true } | { ok: false; error: string } {
+  const job = jobs.get(jobId);
+  if (!job) return { ok: false, error: 'Unknown job' };
+  if (job.status !== 'done' || !job.runIds || Object.keys(job.runIds).length === 0) {
+    return { ok: false, error: 'This job has no captured version to summarise yet.' };
+  }
+  if (job.aiSummaryStatus === 'running' || job.aiSummaryStatus === 'done') {
+    return { ok: true };
+  }
+
+  job.aiSummaryStatus = 'running';
+  job.aiSummaryError = undefined;
+
+  generateDocumentationPoints(job.runIds)
+    .then(async (result) => {
+      job.aiSummary = result;
+      // Rebuild the document with the AI summary appended at the end.
+      if (job.documentPath && job.input) {
+        try {
+          const app = buildAdHocConfig(job.input, job.id);
+          await assembleDocument(app, {
+            runIds: job.runIds,
+            outputPath: job.documentPath,
+            aiSummary: result,
+          });
+          log.ok(`Document updated with AI Summary: ${job.documentPath}`);
+        } catch (err) {
+          log.warn(`Could not update document with AI summary: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      job.aiSummaryStatus = 'done';
+    })
+    .catch((err) => {
+      job.aiSummaryStatus = 'error';
+      job.aiSummaryError = err instanceof Error ? err.message : String(err);
+    });
+
+  return { ok: true };
 }
 
 function safeHost(url: string): string {

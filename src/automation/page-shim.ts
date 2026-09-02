@@ -3,6 +3,22 @@ import { LocatorShim } from './locator-shim.js';
 
 export class PageShim {
   private executionContextId: number | null = null;
+  /**
+   * The frame id of the top-level document we actually navigated to (set from
+   * `Page.frameNavigated` for any frame reporting no `parentId`, and confirmed
+   * by `goto()`'s own `Page.navigate` response). Enterprise SAP portals commonly
+   * load several other frames alongside the one being documented -- a
+   * notification service, a chat widget, an SSO keep-alive iframe -- each of
+   * which fires its own `Runtime.executionContextCreated` with
+   * `auxData.isDefault: true` for *its own* frame. Without this id, the
+   * context handler below accepted whichever such event fired last and had no
+   * way to tell it apart from the frame actually being captured; a live run
+   * against a RISE-hosted landscape showed `evaluate()` silently querying an
+   * empty, irrelevant document for its full three-minute readiness budget
+   * (`interactive=0, dialogs=0`) while the real page -- error dialog included
+   * -- sat fully rendered on screen the whole time.
+   */
+  private mainFrameId: string | null = null;
   private _url = 'about:blank';
   private isClosed_ = false;
   private domContentLoadId: string | null = null;
@@ -16,9 +32,14 @@ export class PageShim {
     const frameNavHandler = (...args: unknown[]) => {
       const params = args[0] as Record<string, unknown> | undefined;
       if (params) {
-        const frame = params.frame as { id: string; url: string } | undefined;
+        const frame = params.frame as { id: string; url: string; parentId?: string } | undefined;
         if (frame) {
-          this._url = frame.url;
+          if (!frame.parentId) {
+            this.mainFrameId = frame.id;
+          }
+          if (!frame.parentId || frame.id === this.mainFrameId) {
+            this._url = frame.url;
+          }
         }
       }
     };
@@ -28,8 +49,13 @@ export class PageShim {
     const contextHandler = (...args: unknown[]) => {
       const params = args[0] as Record<string, unknown> | undefined;
       if (params) {
-        const context = params.context as { id: number; auxData?: { isDefault?: boolean } } | undefined;
-        if (context && context.auxData?.isDefault) {
+        const context = params.context as
+          | { id: number; auxData?: { isDefault?: boolean; frameId?: string } }
+          | undefined;
+        if (
+          context?.auxData?.isDefault &&
+          (this.mainFrameId === null || context.auxData?.frameId === this.mainFrameId)
+        ) {
           this.executionContextId = context.id;
         }
       }
@@ -133,6 +159,12 @@ export class PageShim {
 
         if (resp.errorText) {
           throw new Error(`goto(${url}): ${resp.errorText}`);
+        }
+
+        // Authoritative: this is the frame CDP itself confirms we navigated,
+        // independent of whatever `Page.frameNavigated` events land afterward.
+        if (resp.frameId) {
+          this.mainFrameId = resp.frameId;
         }
 
         if (waitUntil === 'domcontentloaded') {

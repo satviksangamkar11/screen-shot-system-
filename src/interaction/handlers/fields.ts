@@ -191,7 +191,7 @@ export async function handleDate(
   const blocked = await ensureInteractable(control, ctx, loc);
   if (blocked) return blocked;
 
-  const { opened, baseline } = await openControlOverlay(control, ctx, loc, selector);
+  const { opened, baseline, isNative } = await openControlOverlay(control, ctx, loc, selector);
 
   // The open calendar is the evidence.
   await ctx.capture();
@@ -216,13 +216,36 @@ export async function handleDate(
   if (raw) {
     const target = await editableLocator(ctx.page, selector);
 
-    if (control.kind === 'dateRange') {
+    /*
+     * A native `<input type="date">` (the `isNative` branch above already
+     * routed here whenever one is found) does not accept `fill()`'s CDP
+     * `Input.insertText`: that call simulates IME-style text insertion,
+     * which a date input's segmented day/month/year widget silently
+     * discards rather than parses -- confirmed on a live capture where the
+     * value was empty in the final screenshot despite `fill()` resolving
+     * without error. Assigning `.value` directly and dispatching the events
+     * the input itself would fire is what actually reaches a native control,
+     * exactly as the native-`<select>` branch above already does for the
+     * same reason.
+     */
+    if (isNative) {
+      const value = control.kind === 'dateRange' ? splitRange(raw)[0] : raw;
+      await target
+        .evaluate((el: Element, v: string) => {
+          const input = el as HTMLInputElement;
+          input.value = v;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }, value)
+        .catch(() => undefined);
+    } else if (control.kind === 'dateRange') {
       const [from, to] = splitRange(raw);
       await target.fill(`${from} - ${to}`, { timeout: 5000 }).catch(() => undefined);
+      await ctx.page.keyboard.press('Enter').catch(() => undefined);
     } else {
       await target.fill(raw, { timeout: 5000 }).catch(() => undefined);
+      await ctx.page.keyboard.press('Enter').catch(() => undefined);
     }
-    await ctx.page.keyboard.press('Enter').catch(() => undefined);
   }
 
   await waitForStability(ctx.page, ctx.budgets.stabilityTimeoutMs);
