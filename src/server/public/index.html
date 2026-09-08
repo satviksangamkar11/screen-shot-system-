@@ -746,7 +746,7 @@
       const payload = { controlId: activeManualId, action };
       // For text/number inputs, send the value for verification
       if (els.manualTextInput.value) {
-        (payload as any).value = els.manualTextInput.value;
+        payload.value = els.manualTextInput.value;
       }
       const r = await fetch('/api/jobs/' + currentJob + '/manual', {
         method: 'POST',
