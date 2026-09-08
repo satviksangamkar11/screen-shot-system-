@@ -187,7 +187,7 @@ async function unhighlight(page: Page): Promise<void> {
 
 /**
  * Verifies that a selection control has an actual selection made.
- * Checks that a value/option is selected in the real control, not just typed text.
+ * Checks that the control transitioned to a "selected" state, not just has text.
  */
 async function verifySelectionSubmission(
   page: Page,
@@ -198,39 +198,68 @@ async function verifySelectionSubmission(
     const result = await page
       .locator(selector)
       .first()
-      .evaluate((el: Element) => {
-        // For native select element
-        if (el instanceof HTMLSelectElement) {
-          return {
-            selected: el.selectedIndex >= 0 && el.value !== '',
-            value: el.value,
-          };
-        }
-
+      .evaluate((el: Element, kind: string) => {
         const target = el as HTMLElement;
 
-        // Check for UI5 ComboBox / Select value attribute
-        if (target.getAttribute('value') || target.getAttribute('data-value')) {
-          return {
-            selected: !!(target.getAttribute('value') || target.getAttribute('data-value')),
-            value: target.getAttribute('value') || target.getAttribute('data-value'),
-          };
+        // Native select element: must have selected option with non-empty value
+        if (el instanceof HTMLSelectElement) {
+          const selected = el.selectedIndex > 0 && el.value !== '';
+          if (!selected) {
+            return { valid: false, reason: 'no option selected' };
+          }
+          return { valid: true };
         }
 
-        // Check for aria-label / title indicating a selection
-        if (target.getAttribute('aria-label') || target.title) {
-          const text = target.getAttribute('aria-label') || target.title;
-          return { selected: !!text && text !== '', value: text };
+        // For date and dateRange: must have actual date value set
+        if (kind === 'date' || kind === 'dateRange') {
+          const value = (target as HTMLInputElement).value;
+          if (!value) {
+            return { valid: false, reason: 'no date selected' };
+          }
+          return { valid: true };
         }
 
-        // Check for text content indicating selection
-        const innerText = target.innerText?.trim() ?? '';
-        return { selected: !!innerText && innerText !== '', value: innerText };
-      })
-      .catch(() => ({ selected: false, value: '' }));
+        // For select/multiSelect: check UI5-specific attributes and state
+        if (kind === 'select' || kind === 'multiSelect') {
+          // UI5 ComboBox has data-value or value on the trigger
+          const dataValue = target.getAttribute('data-value');
+          const attrValue = target.getAttribute('value');
 
-    if (!result.selected) {
-      log.debug('  [manual] selection verification failed: no selection made');
+          if (dataValue && dataValue !== '') return { valid: true };
+          if (attrValue && attrValue !== '') return { valid: true };
+
+          // Check if input within control has value
+          const input = target.querySelector('input');
+          if (input && input.value && input.value !== '') {
+            return { valid: true };
+          }
+
+          return { valid: false, reason: 'no value selected in control' };
+        }
+
+        // For valueHelp: the trigger should show a selected row/value
+        if (kind === 'valueHelp') {
+          // Check for a value input within the control
+          const input = target.querySelector('input[type="text"]');
+          if (input && (input as HTMLInputElement).value) {
+            return { valid: true };
+          }
+
+          // Check for display text that indicates selection
+          const displayText = target.innerText?.trim() ?? '';
+          if (displayText && !displayText.includes('...')) {
+            return { valid: true };
+          }
+
+          return { valid: false, reason: 'no row selected in value help' };
+        }
+
+        return { valid: false, reason: 'unknown selection control' };
+      }, control.kind)
+      .catch(() => ({ valid: false, reason: 'evaluation-failed' }));
+
+    if (!result.valid) {
+      log.debug(`  [manual] selection verification failed: ${result.reason}`);
       return false;
     }
 
