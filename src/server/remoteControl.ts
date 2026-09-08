@@ -28,6 +28,7 @@ export class RemoteControl {
   private session: CDPSession | undefined;
   private readonly listeners = new Set<(jpegBase64: string) => void>();
   private latestFrame: string | undefined;
+  private passwordMaskStates: Array<{ selector: string; value: string }> | undefined;
 
   constructor(private readonly page: Page) {}
 
@@ -44,6 +45,9 @@ export class RemoteControl {
 
   /** Starts screencasting the current control's field into any subscribers. */
   async start(): Promise<void> {
+    // Mask password fields before streaming to prevent exposure in live view
+    await this.maskPasswordsInPage();
+
     let frameCount = 0;
     try {
       const session = await this.page.context().newCDPSession(this.page);
@@ -103,6 +107,9 @@ export class RemoteControl {
     if (!session) return;
     await session.send('Page.stopScreencast').catch(() => undefined);
     await session.detach().catch(() => undefined);
+
+    // Restore password fields after streaming stops
+    await this.unmaskPasswordsInPage();
   }
 
   /** Forwards a click at the given coordinates, in the page's own viewport space. */
@@ -122,5 +129,80 @@ export class RemoteControl {
    */
   async insertText(text: string): Promise<void> {
     await this.page.keyboard.insertText(text).catch(() => undefined);
+  }
+
+  /**
+   * Masks password fields in the page DOM so they don't appear in the live
+   * screencast. Replaces actual password values with placeholder dots.
+   */
+  private async maskPasswordsInPage(): Promise<void> {
+    try {
+      this.passwordMaskStates = await this.page.evaluate(() => {
+        const saved: Array<{ selector: string; value: string }> = [];
+
+        // Mask native password inputs
+        const passwordInputs = document.querySelectorAll('input[type="password"]');
+        for (let i = 0; i < passwordInputs.length; i++) {
+          const el = passwordInputs[i] as HTMLInputElement;
+          if (el.value) {
+            saved.push({ selector: `password-${i}`, value: el.value });
+            el.value = '••••••••';
+          }
+        }
+
+        // Mask UI5 password fields
+        const ui5Passwords = document.querySelectorAll('[data-type="password"]');
+        for (let i = 0; i < ui5Passwords.length; i++) {
+          const el = ui5Passwords[i] as HTMLElement;
+          const input = el.querySelector('input');
+          if (input && input.value) {
+            saved.push({ selector: `ui5-password-${i}`, value: input.value });
+            input.value = '••••••••';
+          }
+        }
+
+        return saved;
+      });
+    } catch {
+      // Masking failure is non-fatal; continue without masking
+    }
+  }
+
+  /**
+   * Restores password field values after streaming stops.
+   * Undoes the masking from maskPasswordsInPage().
+   */
+  private async unmaskPasswordsInPage(): Promise<void> {
+    if (!this.passwordMaskStates || this.passwordMaskStates.length === 0) return;
+
+    try {
+      const saved = this.passwordMaskStates;
+      this.passwordMaskStates = undefined;
+
+      await this.page.evaluate((saved) => {
+        for (const entry of saved) {
+          let elements: HTMLInputElement[] = [];
+
+          if (entry.selector.startsWith('password-')) {
+            const index = parseInt(entry.selector.replace('password-', ''));
+            const el = document.querySelectorAll('input[type="password"]')[index];
+            if (el) elements.push(el as HTMLInputElement);
+          } else if (entry.selector.startsWith('ui5-password-')) {
+            const index = parseInt(entry.selector.replace('ui5-password-', ''));
+            const container = document.querySelectorAll('[data-type="password"]')[index];
+            if (container) {
+              const input = container.querySelector('input');
+              if (input) elements.push(input as HTMLInputElement);
+            }
+          }
+
+          for (const el of elements) {
+            el.value = entry.value;
+          }
+        }
+      }, saved);
+    } catch {
+      // Unmasking failure is non-fatal
+    }
   }
 }
