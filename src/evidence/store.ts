@@ -373,50 +373,63 @@ export function errMsg(err: unknown): string {
 
 /**
  * Masks password input fields for privacy before screenshot capture.
+ * Replaces password values with placeholder content to guarantee redaction.
  * Returns a restore function that undoes the masking.
  */
 async function maskPasswordFields(page: Page): Promise<() => Promise<void>> {
   try {
-    const maskedElements = await page.evaluate(() => {
-      const masks: { element: Element; type: string }[] = [];
+    const originals = await page.evaluate(() => {
+      const saved: Array<{ selector: string; origValue: string; origType: string }> = [];
 
       // Find all password input fields
       const passwordInputs = document.querySelectorAll('input[type="password"]');
-      for (const el of passwordInputs) {
-        masks.push({ element: el, type: 'password-input' });
-        // Hide the input or replace with masked display
-        (el as HTMLInputElement).style.color = 'transparent';
-        (el as HTMLInputElement).style.textShadow = '0 0 0 black';
+      for (let i = 0; i < passwordInputs.length; i++) {
+        const el = passwordInputs[i] as HTMLInputElement;
+        saved.push({
+          selector: `input[type="password"]:nth-of-type(${i + 1})`,
+          origValue: el.value,
+          origType: 'password',
+        });
+        // Replace with masked placeholder instead of CSS tricks
+        el.value = '••••••••';
+        // Disable input to prevent modification
+        el.disabled = true;
       }
 
-      // Find UI5 password fields (may have data-type or class indicators)
-      const ui5Passwords = document.querySelectorAll('[data-type="password"], [class*="password"]');
-      for (const el of ui5Passwords) {
-        if (el.getAttribute('type') !== 'password' && !masks.some(m => m.element === el)) {
-          masks.push({ element: el, type: 'ui5-password' });
-          (el as HTMLElement).style.color = 'transparent';
-          (el as HTMLElement).style.textShadow = '0 0 0 black';
+      // Find UI5 password fields by data-type attribute
+      const ui5Passwords = document.querySelectorAll('[data-type="password"]');
+      for (let i = 0; i < ui5Passwords.length; i++) {
+        const el = ui5Passwords[i] as HTMLElement;
+        const input = el.querySelector('input');
+        if (input) {
+          saved.push({
+            selector: `[data-type="password"]:nth-of-type(${i + 1}) input`,
+            origValue: input.value,
+            origType: 'ui5-password',
+          });
+          input.value = '••••••••';
+          input.disabled = true;
         }
       }
 
-      return masks.length;
+      return saved;
     });
 
     // Return restore function
     return async () => {
-      await page.evaluate(() => {
-        const passwordInputs = document.querySelectorAll('input[type="password"]');
-        for (const el of passwordInputs) {
-          (el as HTMLInputElement).style.color = '';
-          (el as HTMLInputElement).style.textShadow = '';
-        }
-
-        const ui5Passwords = document.querySelectorAll('[data-type="password"], [class*="password"]');
-        for (const el of ui5Passwords) {
-          (el as HTMLElement).style.color = '';
-          (el as HTMLElement).style.textShadow = '';
-        }
-      }).catch(() => undefined);
+      if (originals && originals.length > 0) {
+        await page.evaluate((saved) => {
+          for (const entry of saved) {
+            const els = document.querySelectorAll(entry.selector);
+            for (const el of els) {
+              if (el instanceof HTMLInputElement) {
+                el.value = entry.origValue;
+                el.disabled = false;
+              }
+            }
+          }
+        }, originals).catch(() => undefined);
+      }
     };
   } catch {
     // If masking fails, return a no-op restore function
