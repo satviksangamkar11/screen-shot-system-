@@ -683,10 +683,6 @@ export class Explorer {
     const counter = { processed: 0, retried: 0 };
     let integrityOk = true;
 
-    // Processing scope instrumentation for audit
-    const auditScopeId = randomUUID().slice(0, 8);
-    let auditSweep = 0;
-
     /**
      * Processes every not-yet-handled control currently on screen.
      *
@@ -744,40 +740,6 @@ export class Explorer {
 
       const controls = await discoverControls(this.page, this.app, this.resolver);
       this.controlsDiscovered += controls.length;
-
-      // Audit logging: capture decision for target controls before filtering
-      const isAuditControl = (c: ControlDescriptor): boolean =>
-        /customer number|commission payee|sales office/i.test(
-          c.canonicalLabel || c.label || '',
-        );
-
-      for (const c of controls) {
-        if (!isAuditControl(c)) continue;
-
-        const shouldProcessResult = this.shouldProcess(c);
-        if (done.has(c.dedupeKey)) {
-          log.info(
-            `[PROCESS-AUDIT] scope=${auditScopeId} sweep=${auditSweep} ` +
-            `action=SKIP reason=already_done ` +
-            `dedupeKey="${c.dedupeKey}" controlId="${c.id}" ` +
-            `label="${c.canonicalLabel || c.label}" attempt=${attempts.get(c.dedupeKey) ?? 0}`,
-          );
-        } else if (!shouldProcessResult) {
-          log.info(
-            `[PROCESS-AUDIT] scope=${auditScopeId} sweep=${auditSweep} ` +
-            `action=SKIP reason=should_process_false ` +
-            `dedupeKey="${c.dedupeKey}" controlId="${c.id}" ` +
-            `label="${c.canonicalLabel || c.label}"`,
-          );
-        } else {
-          log.info(
-            `[PROCESS-AUDIT] scope=${auditScopeId} sweep=${auditSweep} ` +
-            `action=ADMIT ` +
-            `dedupeKey="${c.dedupeKey}" controlId="${c.id}" ` +
-            `label="${c.canonicalLabel || c.label}"`,
-          );
-        }
-      }
 
       let pending = controls.filter(
         (c) => !done.has(c.dedupeKey) && this.shouldProcess(c),
@@ -863,20 +825,6 @@ export class Explorer {
         this.controlsProcessed++;
         didWork = true;
 
-        // Audit logging: processing start
-        const isAuditControl =
-          /customer number|commission payee|sales office/i.test(
-            control.canonicalLabel || control.label || '',
-          );
-        if (isAuditControl) {
-          log.info(
-            `[PROCESS-AUDIT] scope=${auditScopeId} sweep=${auditSweep} ` +
-            `action=PROCESS_START ` +
-            `dedupeKey="${control.dedupeKey}" controlId="${control.id}" ` +
-            `label="${control.canonicalLabel || control.label}" attempt=${attempt}`,
-          );
-        }
-
         const outcome = await this.processOne(
           control,
           pageState,
@@ -886,16 +834,6 @@ export class Explorer {
           drain,
           tab,
         );
-
-        // Audit logging: processing end
-        if (isAuditControl) {
-          log.info(
-            `[PROCESS-AUDIT] scope=${auditScopeId} sweep=${auditSweep} ` +
-            `action=PROCESS_END ` +
-            `dedupeKey="${control.dedupeKey}" controlId="${control.id}" ` +
-            `ok=${outcome.ok} retryable=${outcome.retryable} attempt=${attempt}`,
-          );
-        }
 
         /*
          * Released back into the queue: the control was hidden or covered at
@@ -920,7 +858,6 @@ export class Explorer {
 
     // Re-discovery sweeps catch controls revealed by earlier interactions.
     for (let sweep = 0; sweep < 6 && integrityOk; sweep++) {
-      auditSweep = sweep + 1;
       const before = counter.processed;
       const didWork = await drain(0);
       log.debug(
