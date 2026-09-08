@@ -4,8 +4,9 @@ import { waitForStability } from '../../browser/stability.js';
 import { splitRange } from '../../testdata/provider.js';
 import {
   closeOverlay,
-  confirmOverlay,
+  isOverlayOpen,
   selectFirstOption,
+  selectVerifiedOption,
 } from '../overlay.js';
 import {
   editableLocator,
@@ -252,6 +253,17 @@ export async function handleDate(
   return { documented: true };
 }
 
+/** Reads the current text/value of a field, for before/after comparison around a selection. */
+async function readFieldSnapshot(page: Page, selector: string): Promise<string> {
+  const target = await editableLocator(page, selector);
+  return target
+    .evaluate((el: Element) => {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return el.value;
+      return (el.textContent || '').trim();
+    })
+    .catch(() => '');
+}
+
 /**
  * Value-help / lookup fields.
  *
@@ -280,6 +292,55 @@ export async function handleValueHelp(
   }
 
   /*
+   * Selection happens BEFORE the dialog's own content is explored, and the
+   * order is load-bearing.
+   *
+   * `exploreRevealed` fills the fields it finds — that is its job — and a
+   * lookup dialog's own fields include its search box, which every
+   * `sap.m.SelectDialog`/`TableSelectDialog` wires to live-filter the list.
+   * Filling it with generic test data therefore filters the very rows this
+   * handler exists to choose from down to nothing, and the selection that
+   * follows finds an empty list. That is precisely the difference between
+   * this handler and `handleSelect`/`handleMultiSelect`, which never explore
+   * before choosing and never exhibited the failure: on the live landscape
+   * every value-help field reported no selectable row while every dropdown
+   * on the same form selected correctly.
+   *
+   * Choosing first also matches what a person does — pick the value, and only
+   * then look around the dialog — and costs nothing when the dialog stays
+   * open, since the exploration below still runs against whatever remains.
+   *
+   * A row that can be clicked is not proof a selection was registered -- the
+   * app's own logic has to actually fire, and there is no way to know that
+   * from the click call resolving without error alone. `selectVerifiedOption`
+   * clicks a candidate and only accepts it once the dialog closed on its own
+   * (the common no-OK-button pattern), the row shows `aria-selected="true"`
+   * (dialogs that do require pressing OK), or -- the ground truth, checked
+   * here because only this caller has the target field -- the field's own
+   * value actually changed. A click producing none of those is left alone and
+   * the next candidate row is tried instead of being reported as a selection
+   * that never happened.
+   */
+  /*
+   * Open, *wait for the list to actually have rows*, then choose -- the middle
+   * step is not optional. These dialogs fetch their rows after appearing, and
+   * one on the live landscape renders 1,228 items into the DOM at once
+   * (`aria-setsize="1228"`, a 98,000px-tall scroll container), so "the dialog
+   * is on screen" and "the dialog has its data" are far apart in time. That
+   * wait lives inside `selectVerifiedOption` (see `waitForCandidateRows`),
+   * keyed on rows being present rather than on a spinner disappearing --
+   * `sap.m.TableSelectDialog` keeps its busy indicator in the DOM even once
+   * loaded, so spinner-absence would be the wrong gate.
+   */
+  const before = await readFieldSnapshot(ctx.page, selector);
+  const result = await selectVerifiedOption(
+    ctx.page,
+    ctx.budgets.controlTimeoutMs,
+    baseline,
+    async () => (await readFieldSnapshot(ctx.page, selector)) !== before,
+  );
+
+  /*
    * A lookup dialog carries its own interactive content -- filter fields, a
    * variant selector, its own dropdowns -- exactly as the generic reveal path
    * (probeButton) already explores. Each of those earns its own point, so the
@@ -287,17 +348,32 @@ export async function handleValueHelp(
    * than as a single screenshot of its initial state. `baseline` keeps that
    * nested exploration scoped to the dialog this interaction just opened,
    * not any leftover overlay already on screen alongside it.
+   *
+   * Explored ONLY when a selection actually succeeded, and the dialog is
+   * nonetheless still open. Exploring a dialog whose selection *failed* is
+   * what produced an unbounded loop on a live run: an empty value help
+   * ("No items selected.") can never be selected from, so it stays open,
+   * exploration then works through its own filter bar (Standard / Hide
+   * Filter Bar / Go / Filters), those re-render the dialog, and UI5 mints
+   * fresh auto-generated ids for the rebuilt filter-bar controls
+   * (`__button42` -> `__button57`). Those ids carry no `--` view prefix, so
+   * `dedupeKeyFor` cannot normalise them and every rebuild looks like a set
+   * of brand-new controls -- the crawler re-processed the same dialog
+   * forever. A failed selection means there was nothing usable in the dialog
+   * to begin with, so there is nothing lost by leaving it undocumented.
    */
-  await ctx.exploreRevealed?.(baseline);
+  if (result && (await isOverlayOpen(ctx.page, baseline))) {
+    await ctx.exploreRevealed?.(baseline);
+  }
 
-  const chosen = await selectFirstOption(ctx.page, ctx.budgets.controlTimeoutMs, baseline);
-  if (chosen) await confirmOverlay(ctx.page, baseline);
   await closeOverlay(ctx.page, undefined, baseline);
   await waitForStability(ctx.page, ctx.budgets.stabilityTimeoutMs);
 
   return {
     documented: true,
-    ...(chosen ? { note: `selected "${chosen}"` } : { note: 'no selectable row' }),
+    ...(result
+      ? { note: `selected "${result.text}" (${result.outcome})` }
+      : { note: 'no candidate row produced a verified selection' }),
   };
 }
 

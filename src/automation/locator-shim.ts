@@ -1,4 +1,5 @@
 import { CDPSession } from './cdp-session.js';
+import { log } from '../util/logger.js';
 
 /**
  * The parts of Playwright's selector engine this codebase actually uses.
@@ -215,14 +216,42 @@ export class LocatorShim {
 
     return Promise.race([
       (async () => {
-        const result = (await this.cdpSession.send('Runtime.evaluate', {
-          expression: this.getElementActionExpression('click'),
-          returnByValue: true,
-        })) as { result?: { value?: { x?: number; y?: number; found?: boolean } } };
+        type ClickPoint = { x?: number; y?: number; found?: boolean; blockedBy?: string | null };
+        const probe = async (): Promise<ClickPoint | undefined> => {
+          const result = (await this.cdpSession.send('Runtime.evaluate', {
+            expression: this.getElementActionExpression('click'),
+            returnByValue: true,
+          })) as { result?: { value?: ClickPoint } };
+          return result.result?.value;
+        };
 
-        const coords = result.result?.value;
+        let coords = await probe();
+
+        /*
+         * Something covering the target is usually transient -- a busy/block
+         * layer still fading out, an overlay mid-close -- so give it a short
+         * chance to clear rather than dispatching into it. Bounded well under
+         * the caller's own timeout, and on expiry the click is still
+         * dispatched exactly as before: this can only turn a silently
+         * swallowed click into a landed one, never the reverse.
+         */
+        const clearDeadline = Date.now() + Math.min(timeout, 2000);
+        while (coords?.found && coords.blockedBy && Date.now() < clearDeadline) {
+          await new Promise((r) => setTimeout(r, 100));
+          coords = await probe();
+        }
+
         if (!coords || !coords.found || coords.x === undefined || coords.y === undefined) {
           throw new Error(`LocatorShim.click: element not found or not actionable`);
+        }
+
+        if (coords.blockedBy) {
+          // Dispatched anyway (see above), but never silently: a click that
+          // lands on something else is the failure mode hardest to diagnose
+          // from the outside, so it says so.
+          log.warn(
+            `  click target is covered by ${coords.blockedBy} — dispatching anyway, it may not register`,
+          );
         }
 
         /*
@@ -335,6 +364,21 @@ export class LocatorShim {
 
   private getElementActionExpression(action: string, value?: unknown): string {
     if (action === 'click') {
+      /*
+       * The hit-test matters as much as the coordinates. A click here is a
+       * real `Input.dispatchMouseEvent` at a point, so whatever is topmost at
+       * that point receives it -- not necessarily the element the locator
+       * resolved. Without checking, a transient overlay (a busy/block layer
+       * mid-fade, a tooltip, a sticky bar) silently swallows the click while
+       * `click()` still reports success, producing the worst possible
+       * failure: an action that appears to have happened and did not. This is
+       * generic DOM behaviour, not specific to any framework.
+       *
+       * `blockedBy` uses the same "is the target actually on top" semantics as
+       * `waitUntilEditable` in src/interaction/editability.ts -- the element
+       * itself, an ancestor, or a descendant at that point all count as
+       * clear -- so both places agree on what "covered" means.
+       */
       return this.wrap(`
         const el = __udeMatch();
         if (!el) return { found: false };
@@ -342,7 +386,17 @@ export class LocatorShim {
         if (rect.width === 0 || rect.height === 0) return { found: false };
         el.scrollIntoView({ block: 'center' });
         const r = el.getBoundingClientRect();
-        return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        const x = Math.round(r.left + r.width / 2);
+        const y = Math.round(r.top + r.height / 2);
+        const top = document.elementFromPoint(x, y);
+        const clear = !top || top === el || el.contains(top) || top.contains(el);
+        let blockedBy = null;
+        if (!clear && top) {
+          const cls = top.className;
+          const firstClass = typeof cls === 'string' && cls ? '.' + cls.split(' ')[0] : '';
+          blockedBy = top.tagName.toLowerCase() + firstClass + (top.id ? '#' + top.id : '');
+        }
+        return { found: true, x: x, y: y, blockedBy: blockedBy };
       `);
     }
 
