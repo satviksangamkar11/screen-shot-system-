@@ -99,24 +99,30 @@ export class EvidenceStore {
     let extraFiles: string[] = [];
 
     try {
-      if (isFullPage) {
-        /*
-         * A whole-page capture is taken as consecutive screenfuls rather than
-         * one tall image, matching the reference documents and staying legible
-         * at the document's fixed embed width.
-         */
-        const segments = await captureScrollSegments(args.page, {
-          outputDir: this.screenshotDir,
-          baseName,
-        });
-        if (segments.length > 0) {
-          fileName = segments[0]!;
-          extraFiles = segments.slice(1);
-          this.shotCount += segments.length;
+      // Mask passwords before capturing
+      const restore = await maskPasswordFields(args.page);
+      try {
+        if (isFullPage) {
+          /*
+           * A whole-page capture is taken as consecutive screenfuls rather than
+           * one tall image, matching the reference documents and staying legible
+           * at the document's fixed embed width.
+           */
+          const segments = await captureScrollSegments(args.page, {
+            outputDir: this.screenshotDir,
+            baseName,
+          });
+          if (segments.length > 0) {
+            fileName = segments[0]!;
+            extraFiles = segments.slice(1);
+            this.shotCount += segments.length;
+          }
+        } else {
+          await screenshotWithRetry(args.page, path.join(this.screenshotDir, fileName));
+          this.shotCount++;
         }
-      } else {
-        await screenshotWithRetry(args.page, path.join(this.screenshotDir, fileName));
-        this.shotCount++;
+      } finally {
+        await restore();
       }
     } catch (err) {
       /*
@@ -363,4 +369,57 @@ function slug(s: string): string {
 export function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Masks password input fields for privacy before screenshot capture.
+ * Returns a restore function that undoes the masking.
+ */
+async function maskPasswordFields(page: Page): Promise<() => Promise<void>> {
+  try {
+    const maskedElements = await page.evaluate(() => {
+      const masks: { element: Element; type: string }[] = [];
+
+      // Find all password input fields
+      const passwordInputs = document.querySelectorAll('input[type="password"]');
+      for (const el of passwordInputs) {
+        masks.push({ element: el, type: 'password-input' });
+        // Hide the input or replace with masked display
+        (el as HTMLInputElement).style.color = 'transparent';
+        (el as HTMLInputElement).style.textShadow = '0 0 0 black';
+      }
+
+      // Find UI5 password fields (may have data-type or class indicators)
+      const ui5Passwords = document.querySelectorAll('[data-type="password"], [class*="password"]');
+      for (const el of ui5Passwords) {
+        if (el.getAttribute('type') !== 'password' && !masks.some(m => m.element === el)) {
+          masks.push({ element: el, type: 'ui5-password' });
+          (el as HTMLElement).style.color = 'transparent';
+          (el as HTMLElement).style.textShadow = '0 0 0 black';
+        }
+      }
+
+      return masks.length;
+    });
+
+    // Return restore function
+    return async () => {
+      await page.evaluate(() => {
+        const passwordInputs = document.querySelectorAll('input[type="password"]');
+        for (const el of passwordInputs) {
+          (el as HTMLInputElement).style.color = '';
+          (el as HTMLInputElement).style.textShadow = '';
+        }
+
+        const ui5Passwords = document.querySelectorAll('[data-type="password"], [class*="password"]');
+        for (const el of ui5Passwords) {
+          (el as HTMLElement).style.color = '';
+          (el as HTMLElement).style.textShadow = '';
+        }
+      }).catch(() => undefined);
+    };
+  } catch {
+    // If masking fails, return a no-op restore function
+    return async () => undefined;
+  }
 }
