@@ -50,18 +50,13 @@ export type ContainerType = 'group' | 'table' | 'toolbar' | 'dialog';
 /**
  * Control kinds that produce a documentation point (label + screenshot).
  *
- * Every control that opens meaningful UI, plus the fillable controls whose
- * filled state is not already visible elsewhere. Action buttons, read-only
- * fields, tabs and nav items drive exploration but are never documented.
- *
- * `input` and `textarea` are deliberately absent: they are still located,
- * filled and committed exactly as before (so dependent fields react and the
- * form reaches a realistic state), but earn no screenshot of their own. A
- * plain text field carrying a value adds nothing that the page's closing
- * "Full Page" capture does not already show, and one point per text field
- * buried the interactions that actually matter.
+ * Every control that opens meaningful UI, plus fillable controls whose
+ * filled state matters for documentation. Action buttons, read-only fields,
+ * tabs and nav items drive exploration but are never documented.
  */
 export const POINT_KINDS: ReadonlySet<ControlKind> = new Set<ControlKind>([
+  'input',
+  'textarea',
   'select',
   'date',
   'dateRange',
@@ -85,6 +80,8 @@ export const OPENS_OVERLAY: ReadonlySet<ControlKind> = new Set<ControlKind>([
 
 /** Maps a control kind to the interaction type recorded for its evidence. */
 export const KIND_TO_INTERACTION: Readonly<Record<string, InteractionType>> = {
+  input: 'fill',
+  textarea: 'fill',
   select: 'dropdownOpen',
   date: 'calendarOpen',
   dateRange: 'calendarOpen',

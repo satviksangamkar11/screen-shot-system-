@@ -110,6 +110,40 @@ export async function runManualStep(
     return { documented: false, note: 'skipped by operator (manual mode)' };
   }
 
+  // Verify the submitted value
+  if (control.kind === 'input' || control.kind === 'textarea') {
+    const verified = await verifyFieldSubmission(ctx.page, control, selector);
+    if (!verified) {
+      log.warn(
+        `  [manual] field "${label}" verification failed; retaining for operator`,
+      );
+      gate.setItemStatus(control.dedupeKey, 'waiting');
+      return {
+        documented: false,
+        note: 'field verification failed (empty or invalid state); please try again',
+      };
+    }
+  } else if (
+    control.kind === 'select' ||
+    control.kind === 'multiSelect' ||
+    control.kind === 'valueHelp' ||
+    control.kind === 'date' ||
+    control.kind === 'dateRange'
+  ) {
+    // For selection controls, verify the actual selection state
+    const verified = await verifySelectionSubmission(ctx.page, control, selector);
+    if (!verified) {
+      log.warn(
+        `  [manual] selection "${label}" verification failed; retaining for operator`,
+      );
+      gate.setItemStatus(control.dedupeKey, 'waiting');
+      return {
+        documented: false,
+        note: 'selection verification failed; please try again',
+      };
+    }
+  }
+
   await ctx.capture();
   gate.setItemStatus(control.dedupeKey, 'completed');
   return { documented: true };
@@ -143,4 +177,125 @@ async function unhighlight(page: Page): Promise<void> {
       target.style.removeProperty('outline-offset');
     }, HIGHLIGHT_ATTR)
     .catch(() => undefined);
+}
+
+/**
+ * Verifies that a selection control has an actual selection made.
+ * Checks that a value/option is selected in the real control, not just typed text.
+ */
+async function verifySelectionSubmission(
+  page: Page,
+  control: ControlDescriptor,
+  selector: string,
+): Promise<boolean> {
+  try {
+    const result = await page
+      .locator(selector)
+      .first()
+      .evaluate((el: Element) => {
+        // For native select element
+        if (el instanceof HTMLSelectElement) {
+          return {
+            selected: el.selectedIndex >= 0 && el.value !== '',
+            value: el.value,
+          };
+        }
+
+        const target = el as HTMLElement;
+
+        // Check for UI5 ComboBox / Select value attribute
+        if (target.getAttribute('value') || target.getAttribute('data-value')) {
+          return {
+            selected: !!(target.getAttribute('value') || target.getAttribute('data-value')),
+            value: target.getAttribute('value') || target.getAttribute('data-value'),
+          };
+        }
+
+        // Check for aria-label / title indicating a selection
+        if (target.getAttribute('aria-label') || target.title) {
+          const text = target.getAttribute('aria-label') || target.title;
+          return { selected: !!text && text !== '', value: text };
+        }
+
+        // Check for text content indicating selection
+        const innerText = target.innerText?.trim() ?? '';
+        return { selected: !!innerText && innerText !== '', value: innerText };
+      })
+      .catch(() => ({ selected: false, value: '' }));
+
+    if (!result.selected) {
+      log.debug('  [manual] selection verification failed: no selection made');
+      return false;
+    }
+
+    return true;
+  } catch {
+    log.debug('  [manual] selection verification error');
+    return false;
+  }
+}
+
+/**
+ * Verifies that a text/numeric field submission is valid.
+ * Checks that the actual DOM value exists and is not in an invalid state.
+ */
+async function verifyFieldSubmission(
+  page: Page,
+  control: ControlDescriptor,
+  selector: string,
+): Promise<boolean> {
+  try {
+    const result = await page
+      .locator(selector)
+      .first()
+      .evaluate((el: Element) => {
+        const target = el as HTMLInputElement | HTMLTextAreaElement;
+
+        // Check if field is empty
+        const value = target.value?.trim() ?? '';
+        if (!value) {
+          return { valid: false, reason: 'empty' };
+        }
+
+        // Check for client-side validation errors
+        if ('validity' in target) {
+          const validity = (target as HTMLInputElement).validity;
+          if (validity && !validity.valid) {
+            return {
+              valid: false,
+              reason: `invalid: ${validity.typeMismatch ? 'type' : validity.rangeUnderflow ? 'range' : 'constraint'}`,
+            };
+          }
+        }
+
+        // Check for aria-invalid attribute (framework validation)
+        if (target.getAttribute('aria-invalid') === 'true') {
+          return { valid: false, reason: 'aria-invalid' };
+        }
+
+        // Check for common framework error indicators
+        const parent = target.parentElement;
+        if (parent?.classList.contains('sapUiInvalid') ||
+            parent?.classList.contains('is-invalid') ||
+            parent?.classList.contains('error') ||
+            target.classList.contains('sapUiInvalid') ||
+            target.classList.contains('is-invalid') ||
+            target.classList.contains('error')) {
+          return { valid: false, reason: 'framework-error' };
+        }
+
+        return { valid: true };
+      })
+      .catch(() => ({ valid: false, reason: 'evaluation-failed' }));
+
+    if (!result.valid) {
+      log.debug(`  [manual] field validation failed: ${result.reason}`);
+      return false;
+    }
+
+    return true;
+  } catch {
+    log.debug('  [manual] field verification error');
+    return false;
+  }
 }
