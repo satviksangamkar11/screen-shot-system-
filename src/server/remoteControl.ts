@@ -67,15 +67,19 @@ export class RemoteControl {
       log.debug(`  [remote] screencast started (subscribers=${this.listeners.size})`);
 
       /*
-       * Chrome only emits a screencast frame on an actual repaint -- a page
-       * that has already settled by the time `start()` runs may not repaint
-       * again until the operator's own click/type triggers one, leaving the
-       * live view showing nothing at all in the meantime. `highlight()` in
-       * manual.ts runs just before this and does force one paint, but that
-       * happens outside this class's knowledge, so this checks after a short
-       * delay whether Chrome ever actually sent anything, purely so a silent
-       * stall is visible in the log instead of just an unexplained blank
-       * live view.
+       * Chrome only emits a screencast frame on an actual repaint. If the page
+       * has already settled when `start()` runs, Chrome won't emit a frame until
+       * the operator triggers one via click/type, leaving the live view stale.
+       * Force an immediate repaint so the operator sees current state by
+       * evaluating a script that reads a layout property (forces reflow).
+       */
+      await session
+        .send('Runtime.evaluate', { expression: 'document.documentElement.offsetHeight' })
+        .catch(() => undefined);
+
+      /*
+       * Backup timeout: if Chrome still hasn't sent a frame after 2s, warn so
+       * a stale UI is visible in the log instead of unexplained silence.
        */
       setTimeout(() => {
         if (this.session === session && frameCount === 0) {
