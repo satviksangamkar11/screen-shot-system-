@@ -72,37 +72,38 @@ export async function discoverControls(
       found++;
 
       const kind = adapter.classify(c);
+      const container = adapter.containerType?.(c);
 
-      // Identity audit logging: capture actual controlId behavior for repeated controls
+      const descriptor = makeDescriptor({
+        id: c.id,
+        kind,
+        rawLabel: normalise(c.label || c.text),
+        section: normalise(c.section),
+        selector: c.selector,
+        domOrder: c.domOrder,
+        required: c.required,
+        resolver,
+        excluded,
+        alreadyExpanded: c.alreadyExpanded,
+        allowIdSuffixFallback,
+        ...(c.inputType ? { inputType: c.inputType } : {}),
+        ...(c.title ? { title: c.title } : {}),
+        ...(container ? { containerType: container.type, containerLabel: normalise(container.label) } : {}),
+      });
+
+      // Identity audit logging: capture descriptor fields including actual dedupeKey
       if (
         adapter === ui5Adapter &&
         /customer number|commission payee/i.test(c.label || c.text)
       ) {
         log.info(
-          `[IDENTITY-AUDIT] adapter=ui5 controlId="${c.id}" domId="${c.domId}" ` +
-          `label="${c.label || c.text}" section="${c.section}" domOrder=${c.domOrder}`,
+          `[IDENTITY-AUDIT] controlId="${descriptor.id}" domId="${c.domId}" ` +
+          `dedupeKey="${descriptor.dedupeKey}" label="${descriptor.label}" ` +
+          `section="${descriptor.section}" domOrder=${descriptor.domOrder}`,
         );
       }
 
-      const container = adapter.containerType?.(c);
-      out.push(
-        makeDescriptor({
-          id: c.id,
-          kind,
-          rawLabel: normalise(c.label || c.text),
-          section: normalise(c.section),
-          selector: c.selector,
-          domOrder: c.domOrder,
-          required: c.required,
-          resolver,
-          excluded,
-          alreadyExpanded: c.alreadyExpanded,
-          allowIdSuffixFallback,
-          ...(c.inputType ? { inputType: c.inputType } : {}),
-          ...(c.title ? { title: c.title } : {}),
-          ...(container ? { containerType: container.type, containerLabel: normalise(container.label) } : {}),
-        }),
-      );
+      out.push(descriptor);
     }
     foundByAdapter.push(found);
   }
