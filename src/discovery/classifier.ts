@@ -44,6 +44,9 @@ export async function discoverControls(
   const foundByAdapter: number[] = [];
   let totalSkippedAsClaimed = 0;
 
+  // Identity audit tracking
+  const auditedControls: Array<{ label: string; dedupeKey: string }> = [];
+
   for (const adapter of ADAPTERS) {
     const isPresent = await adapter.detect(page);
     if (!isPresent) {
@@ -101,6 +104,10 @@ export async function discoverControls(
           `dedupeKey="${descriptor.dedupeKey}" label="${descriptor.label}" ` +
           `section="${descriptor.section}" domOrder=${descriptor.domOrder}`,
         );
+        auditedControls.push({
+          label: descriptor.label,
+          dedupeKey: descriptor.dedupeKey,
+        });
       }
 
       out.push(descriptor);
@@ -122,6 +129,25 @@ export async function discoverControls(
     `  [discover] ${foundByAdapter.join('+')} (${totalSkippedAsClaimed} already claimed) ` +
       `total=${out.length} points=${pointCount} — ${kindSummary}`,
   );
+
+  // Identity audit summary
+  if (auditedControls.length > 0) {
+    const byLabel = new Map<string, Set<string>>();
+    for (const audit of auditedControls) {
+      if (!byLabel.has(audit.label)) {
+        byLabel.set(audit.label, new Set());
+      }
+      byLabel.get(audit.label)!.add(audit.dedupeKey);
+    }
+
+    for (const [label, keys] of byLabel) {
+      const uniqueCount = keys.size;
+      const totalCount = auditedControls.filter((a) => a.label === label).length;
+      log.info(
+        `[IDENTITY-SUMMARY] ${label}: ${totalCount} discoveries, ${uniqueCount} unique dedupeKey(s)`,
+      );
+    }
+  }
 
   return out.sort((a, b) => a.domOrder - b.domOrder);
 }
