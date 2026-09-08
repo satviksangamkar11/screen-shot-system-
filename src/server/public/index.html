@@ -150,6 +150,19 @@
     background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 20px; line-height: 1.4;
   }
 
+  .manualOptions { margin-top: 12px; margin-bottom: 12px; }
+  .manualOptions .optionsLabel { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+  .manualOptions .optionsGrid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 6px;
+  }
+  .manualOptions button {
+    padding: 8px 12px; font-size: 13px; border-radius: 6px;
+    border: 1px solid var(--accent); background: transparent; color: var(--accent);
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .manualOptions button:hover { background: rgba(10,110,209,.1); }
+
   .manualControls { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
   .manualControls input[type="text"] {
     flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
@@ -302,6 +315,10 @@
       <div class="liveStatus" id="liveStatus">Connecting to live view…</div>
       <span class="liveHint hidden" id="liveHint">Click to interact</span>
     </div>
+    <div class="manualOptions hidden" id="manualOptions">
+      <div class="optionsLabel">Select an option:</div>
+      <div class="optionsGrid" id="optionsGrid"></div>
+    </div>
     <div class="manualControls">
       <input type="text" id="manualTextInput" placeholder="Type a value, then press Enter">
       <button id="manualSubmit">Submit Element</button>
@@ -335,6 +352,7 @@
     manualFieldLabel: $('manualFieldLabel'), manualFieldSub: $('manualFieldSub'),
     liveViewPanel: $('liveViewPanel'), liveViewHeading: $('liveViewHeading'), liveViewHint: $('liveViewHint'),
     liveView: $('liveView'), liveStatus: $('liveStatus'), liveHint: $('liveHint'),
+    manualOptions: $('manualOptions'), optionsGrid: $('optionsGrid'),
     manualTextInput: $('manualTextInput'),
     manualSubmit: $('manualSubmit'), manualSkip: $('manualSkip'),
     manualWaitHint: $('manualWaitHint'),
@@ -768,10 +786,40 @@
       els.manualWaitHint.classList.add('hidden');
       els.manualFieldLabel.textContent = active.label;
       els.manualFieldSub.textContent = [active.kind, active.tab, active.section].filter(Boolean).join(' · ');
+
+      // Display selection options if available for select/multiSelect/valueHelp controls
+      if (active.options && active.options.length > 0) {
+        els.manualOptions.classList.remove('hidden');
+        els.optionsGrid.innerHTML = active.options.map((opt) => {
+          return (
+            '<button type="button" data-option-value="' + escapeHtml(opt.value) + '">' +
+            escapeHtml(opt.label) +
+            '</button>'
+          );
+        }).join('');
+
+        // Handle option button clicks: insert the value into the browser, tab to commit, then submit
+        for (const btn of els.optionsGrid.querySelectorAll('button')) {
+          btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const value = btn.getAttribute('data-option-value');
+            // Send the value to the browser the same way typing does: insert text + Tab
+            // to commit it (same as the textbox Enter handler does)
+            await sendInput({ type: 'text', value })
+              .then(() => sendInput({ type: 'key', key: 'Tab' }))
+              .then(() => confirmActive('submit', els.manualSubmit));
+          });
+        }
+      } else {
+        els.manualOptions.classList.add('hidden');
+        els.optionsGrid.innerHTML = '';
+      }
     } else {
       activeManualId = null;
       els.manualActive.classList.add('hidden');
       els.manualWaitHint.classList.remove('hidden');
+      els.manualOptions.classList.add('hidden');
+      els.optionsGrid.innerHTML = '';
     }
   }
 

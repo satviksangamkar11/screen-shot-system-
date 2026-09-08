@@ -22,6 +22,8 @@ export interface ManualQueueItem {
   section?: string;
   tab?: string;
   status: ManualStatus;
+  /** For select/multiSelect/valueHelp controls: the actual available options. */
+  options?: { value: string; label: string }[];
 }
 
 export interface ManualGate {

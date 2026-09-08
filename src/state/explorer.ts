@@ -781,16 +781,21 @@ export class Explorer {
       // queue. `setQueue` upserts, so items already in progress/completed/
       // skipped from an earlier sweep keep their status.
       if (this.manualGate) {
-        this.manualGate.setQueue(
-          pending.map((c) => ({
-            id: c.dedupeKey,
-            label: c.canonicalLabel || c.label || c.id,
-            kind: c.kind,
-            ...(c.section ? { section: c.section } : {}),
-            ...(tab ? { tab } : {}),
-            status: 'waiting' as const,
-          })),
+        const queueItems = await Promise.all(
+          pending.map(async (c) => {
+            const options = await extractSelectionOptions(this.page, c);
+            return {
+              id: c.dedupeKey,
+              label: c.canonicalLabel || c.label || c.id,
+              kind: c.kind,
+              ...(c.section ? { section: c.section } : {}),
+              ...(tab ? { tab } : {}),
+              ...(options ? { options } : {}),
+              status: 'waiting' as const,
+            };
+          }),
         );
+        this.manualGate.setQueue(queueItems);
       }
 
       if (pending.length === 0) return false;
@@ -1421,6 +1426,65 @@ export class Explorer {
     if (!recorded) return true;
     const current = await structuralSignature(this.page);
     return !structureFullyReplaced(recorded, current);
+  }
+}
+
+/**
+ * Extracts available options from a select, multiSelect, or valueHelp control
+ * so the manual UI can display them as clickable buttons instead of requiring
+ * pixel-perfect clicks in the video.
+ *
+ * Returns undefined if extraction fails or isn't applicable.
+ */
+async function extractSelectionOptions(
+  page: Page,
+  control: ControlDescriptor,
+): Promise<{ value: string; label: string }[] | undefined> {
+  if (
+    control.kind !== 'select' &&
+    control.kind !== 'multiSelect' &&
+    control.kind !== 'valueHelp'
+  ) {
+    return undefined;
+  }
+
+  try {
+    return await page
+      .locator(control.selector)
+      .first()
+      .evaluate((el: Element) => {
+        const target = el as HTMLElement;
+
+        // For UI5 ComboBox / MultiComboBox / Input with value help:
+        // Look for list items that would be clickable
+        const items = target.querySelectorAll(
+          '[role="option"], [role="menuitem"], .sapMSelectListItem, .sapMLIBase, .sapMListItemBase',
+        );
+        if (items.length > 0) {
+          return Array.from(items)
+            .slice(0, 100) // Cap at 100 options
+            .map((item) => ({
+              value: (item as any).innerText?.trim() || (item as HTMLElement).textContent?.trim() || '',
+              label: (item as any).innerText?.trim() || (item as HTMLElement).textContent?.trim() || '',
+            }))
+            .filter((opt) => opt.label);
+        }
+
+        // For native select elements
+        if (target instanceof HTMLSelectElement) {
+          return Array.from(target.options)
+            .slice(0, 100)
+            .map((opt) => ({
+              value: opt.value,
+              label: opt.textContent?.trim() || opt.value,
+            }));
+        }
+
+        return undefined;
+      })
+      .catch(() => undefined);
+  } catch {
+    return undefined;
   }
 }
 
