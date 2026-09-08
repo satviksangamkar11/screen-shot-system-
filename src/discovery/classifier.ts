@@ -4,6 +4,7 @@ import { POINT_KINDS } from '../types.js';
 import type { AppConfig } from '../config/schema.js';
 import { canonicalise, hasMeaningfulLabel, type LabelResolver } from './labels.js';
 import { ADAPTERS } from './adapters/registry.js';
+import { ui5Adapter } from './adapters/ui5.js';
 import { log } from '../util/logger.js';
 
 /**
@@ -71,6 +72,18 @@ export async function discoverControls(
       found++;
 
       const kind = adapter.classify(c);
+
+      // Identity audit logging: capture actual controlId behavior for repeated controls
+      if (
+        adapter === ui5Adapter &&
+        /customer number|commission payee/i.test(c.label || c.text)
+      ) {
+        log.info(
+          `[IDENTITY-AUDIT] adapter=ui5 controlId="${c.id}" domId="${c.domId}" ` +
+          `label="${c.label || c.text}" section="${c.section}" domOrder=${c.domOrder}`,
+        );
+      }
+
       const container = adapter.containerType?.(c);
       out.push(
         makeDescriptor({
