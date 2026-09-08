@@ -112,7 +112,13 @@ export async function runManualStep(
 
   // Verify the submitted value
   if (control.kind === 'input' || control.kind === 'textarea') {
-    const verified = await verifyFieldSubmission(ctx.page, control, selector);
+    const submittedValue = gate.getSubmittedValue(control.dedupeKey);
+    const verified = await verifyFieldSubmission(
+      ctx.page,
+      control,
+      selector,
+      submittedValue,
+    );
     if (!verified) {
       log.warn(
         `  [manual] field "${label}" verification failed; retaining for operator`,
@@ -120,7 +126,7 @@ export async function runManualStep(
       gate.setItemStatus(control.dedupeKey, 'waiting');
       return {
         documented: false,
-        note: 'field verification failed (empty or invalid state); please try again',
+        note: 'field verification failed (value mismatch or invalid state); please try again',
       };
     }
   } else if (
@@ -237,55 +243,76 @@ async function verifySelectionSubmission(
 
 /**
  * Verifies that a text/numeric field submission is valid.
- * Checks that the actual DOM value exists and is not in an invalid state.
+ * Checks that the actual DOM value matches what was submitted and is not in error state.
  */
 async function verifyFieldSubmission(
   page: Page,
   control: ControlDescriptor,
   selector: string,
+  submittedValue?: string,
 ): Promise<boolean> {
   try {
     const result = await page
       .locator(selector)
       .first()
-      .evaluate((el: Element) => {
-        const target = el as HTMLInputElement | HTMLTextAreaElement;
+      .evaluate(
+        (el: Element, expected: string | undefined) => {
+          const target = el as HTMLInputElement | HTMLTextAreaElement;
+          const actual = target.value?.trim() ?? '';
 
-        // Check if field is empty
-        const value = target.value?.trim() ?? '';
-        if (!value) {
-          return { valid: false, reason: 'empty' };
-        }
-
-        // Check for client-side validation errors
-        if ('validity' in target) {
-          const validity = (target as HTMLInputElement).validity;
-          if (validity && !validity.valid) {
-            return {
-              valid: false,
-              reason: `invalid: ${validity.typeMismatch ? 'type' : validity.rangeUnderflow ? 'range' : 'constraint'}`,
-            };
+          // Check if field is empty
+          if (!actual) {
+            return { valid: false, reason: 'empty' };
           }
-        }
 
-        // Check for aria-invalid attribute (framework validation)
-        if (target.getAttribute('aria-invalid') === 'true') {
-          return { valid: false, reason: 'aria-invalid' };
-        }
+          // If we have an expected value, verify it matches (allowing for whitespace/normalization)
+          if (expected !== undefined) {
+            const normalizeForComparison = (s: string) =>
+              s.toLowerCase().trim().replace(/\s+/g, ' ');
+            if (
+              normalizeForComparison(actual) !==
+              normalizeForComparison(expected)
+            ) {
+              return {
+                valid: false,
+                reason: `mismatch: expected "${expected}", got "${actual}"`,
+              };
+            }
+          }
 
-        // Check for common framework error indicators
-        const parent = target.parentElement;
-        if (parent?.classList.contains('sapUiInvalid') ||
+          // Check for client-side validation errors
+          if ('validity' in target) {
+            const validity = (target as HTMLInputElement).validity;
+            if (validity && !validity.valid) {
+              return {
+                valid: false,
+                reason: `invalid: ${validity.typeMismatch ? 'type' : validity.rangeUnderflow ? 'range' : 'constraint'}`,
+              };
+            }
+          }
+
+          // Check for aria-invalid attribute (framework validation)
+          if (target.getAttribute('aria-invalid') === 'true') {
+            return { valid: false, reason: 'aria-invalid' };
+          }
+
+          // Check for common framework error indicators
+          const parent = target.parentElement;
+          if (
+            parent?.classList.contains('sapUiInvalid') ||
             parent?.classList.contains('is-invalid') ||
             parent?.classList.contains('error') ||
             target.classList.contains('sapUiInvalid') ||
             target.classList.contains('is-invalid') ||
-            target.classList.contains('error')) {
-          return { valid: false, reason: 'framework-error' };
-        }
+            target.classList.contains('error')
+          ) {
+            return { valid: false, reason: 'framework-error' };
+          }
 
-        return { valid: true };
-      })
+          return { valid: true };
+        },
+        submittedValue,
+      )
       .catch(() => ({ valid: false, reason: 'evaluation-failed' }));
 
     if (!result.valid) {

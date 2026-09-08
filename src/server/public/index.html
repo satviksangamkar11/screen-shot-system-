@@ -743,10 +743,15 @@
     if (!currentJob || !activeManualId) return;
     btn.disabled = true;
     try {
+      const payload = { controlId: activeManualId, action };
+      // For text/number inputs, send the value for verification
+      if (els.manualTextInput.value) {
+        (payload as any).value = els.manualTextInput.value;
+      }
       const r = await fetch('/api/jobs/' + currentJob + '/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controlId: activeManualId, action }),
+        body: JSON.stringify(payload),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));

@@ -121,10 +121,11 @@ export function resolveManualStep(
   jobId: string,
   controlId: string,
   action: 'submit' | 'skip',
+  submittedValue?: string,
 ): boolean {
   const gate = manualGates.get(jobId);
   if (!gate) return false;
-  return gate.resolve(controlId, action);
+  return gate.resolve(controlId, action, submittedValue);
 }
 
 /** Reports whether this user already has a saved session for a URL. */

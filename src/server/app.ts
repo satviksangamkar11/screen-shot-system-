@@ -277,15 +277,16 @@ async function handle(
     const job = getJob(manualMatch[1]!);
     if (!job) return sendJson(res, 404, { error: 'Unknown job' });
 
-    const body = (await readBody(req)) as { controlId?: string; action?: string };
+    const body = (await readBody(req)) as { controlId?: string; action?: string; value?: string };
     const controlId = typeof body.controlId === 'string' ? body.controlId : '';
     const action = body.action === 'skip' ? 'skip' : body.action === 'submit' ? 'submit' : null;
+    const submittedValue = typeof body.value === 'string' ? body.value : undefined;
 
     if (!controlId || !action) {
       return sendJson(res, 400, { error: 'controlId and action ("submit" | "skip") are required.' });
     }
 
-    const ok = resolveManualStep(job.id, controlId, action);
+    const ok = resolveManualStep(job.id, controlId, action, submittedValue);
     if (!ok) {
       return sendJson(res, 409, {
         error: 'That element is not currently waiting on confirmation.',

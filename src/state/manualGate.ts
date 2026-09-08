@@ -46,6 +46,8 @@ export interface ManualGate {
   activate(id: string): Promise<'submit' | 'skip'>;
   /** Clears the queue — called when the explorer moves on to a new page. */
   reset(): void;
+  /** Gets the value the operator submitted for the given control (if any). */
+  getSubmittedValue(id: string): string | undefined;
 }
 
 /**
@@ -57,6 +59,7 @@ export interface ManualGate {
 export class InMemoryManualGate implements ManualGate {
   private queue: ManualQueueItem[] = [];
   private pending = new Map<string, (action: 'submit' | 'skip') => void>();
+  private submittedValues = new Map<string, string>();
 
   /** Called whenever the queue changes, so a host (the job) can mirror it. */
   onChange?: (queue: ManualQueueItem[], activeId: string | undefined) => void;
@@ -99,12 +102,19 @@ export class InMemoryManualGate implements ManualGate {
   }
 
   /** Called by the HTTP endpoint when the operator clicks Submit/Skip. */
-  resolve(id: string, action: 'submit' | 'skip'): boolean {
+  resolve(id: string, action: 'submit' | 'skip', submittedValue?: string): boolean {
     const fn = this.pending.get(id);
     if (!fn) return false;
     this.pending.delete(id);
     if (this.activeId === id) this.activeId = undefined;
+    if (submittedValue !== undefined) {
+      this.submittedValues.set(id, submittedValue);
+    }
     fn(action);
     return true;
+  }
+
+  getSubmittedValue(id: string): string | undefined {
+    return this.submittedValues.get(id);
   }
 }
