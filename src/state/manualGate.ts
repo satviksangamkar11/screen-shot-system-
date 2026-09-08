@@ -22,6 +22,8 @@ export interface ManualQueueItem {
   section?: string;
   tab?: string;
   status: ManualStatus;
+  /** For input/number: the underlying input type (number, email, tel, password, etc.). */
+  inputType?: string;
   /** For select/multiSelect/valueHelp controls: the actual available options. */
   options?: { value: string; label: string }[];
 }
