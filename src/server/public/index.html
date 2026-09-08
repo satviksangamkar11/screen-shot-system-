@@ -319,7 +319,7 @@
       <div class="optionsLabel">Select an option:</div>
       <div class="optionsGrid" id="optionsGrid"></div>
     </div>
-    <div class="manualControls">
+    <div class="manualControls" id="manualControls">
       <input type="text" id="manualTextInput" placeholder="Type a value, then press Enter">
       <button id="manualSubmit">Submit Element</button>
       <button id="manualSkip" class="secondary skip">Skip</button>
@@ -353,6 +353,7 @@
     liveViewPanel: $('liveViewPanel'), liveViewHeading: $('liveViewHeading'), liveViewHint: $('liveViewHint'),
     liveView: $('liveView'), liveStatus: $('liveStatus'), liveHint: $('liveHint'),
     manualOptions: $('manualOptions'), optionsGrid: $('optionsGrid'),
+    manualControls: $('manualControls'),
     manualTextInput: $('manualTextInput'),
     manualSubmit: $('manualSubmit'), manualSkip: $('manualSkip'),
     manualWaitHint: $('manualWaitHint'),
@@ -762,6 +763,22 @@
   els.manualSubmit.addEventListener('click', () => confirmActive('submit', els.manualSubmit));
   els.manualSkip.addEventListener('click', () => confirmActive('skip', els.manualSkip));
 
+  function getInputPlaceholder(kind, inputType) {
+    if (kind === 'input' || kind === 'textarea') {
+      if (inputType === 'number') return 'Type a number';
+      if (inputType === 'email') return 'Type an email';
+      if (inputType === 'tel') return 'Type a phone number';
+      if (inputType === 'url') return 'Type a URL';
+      if (inputType === 'password') return 'Type password';
+      return 'Type a value';
+    }
+    if (kind === 'select' || kind === 'multiSelect') return 'Select from options above';
+    if (kind === 'date') return 'Select a date from the picker';
+    if (kind === 'dateRange') return 'Select a date range';
+    if (kind === 'valueHelp') return 'Choose from the list';
+    return 'Type a value';
+  }
+
   function updateManualView(d) {
     if (d.dataEntryMode !== 'manual') {
       els.manualPanel.classList.add('hidden');
@@ -787,7 +804,18 @@
       els.manualFieldLabel.textContent = active.label;
       els.manualFieldSub.textContent = [active.kind, active.tab, active.section].filter(Boolean).join(' · ');
 
-      // Display selection options if available for select/multiSelect/valueHelp controls
+      // Configure input based on control kind
+      const isPassword = active.inputType === 'password';
+      const isSelection = active.kind === 'select' || active.kind === 'multiSelect' ||
+                         active.kind === 'valueHelp' || active.kind === 'date' || active.kind === 'dateRange';
+      const isNumber = active.inputType === 'number';
+
+      els.manualTextInput.type = isPassword ? 'password' : isNumber ? 'number' : 'text';
+      els.manualTextInput.placeholder = getInputPlaceholder(active.kind, active.inputType);
+      els.manualTextInput.value = '';
+      els.manualTextInput.disabled = isSelection && active.options && active.options.length > 0;
+
+      // Display selection options if available
       if (active.options && active.options.length > 0) {
         els.manualOptions.classList.remove('hidden');
         els.optionsGrid.innerHTML = active.options.map((opt) => {
@@ -798,13 +826,11 @@
           );
         }).join('');
 
-        // Handle option button clicks: insert the value into the browser, tab to commit, then submit
+        // Handle option button clicks: send value to browser and submit
         for (const btn of els.optionsGrid.querySelectorAll('button')) {
           btn.addEventListener('click', async (e) => {
             e.preventDefault();
             const value = btn.getAttribute('data-option-value');
-            // Send the value to the browser the same way typing does: insert text + Tab
-            // to commit it (same as the textbox Enter handler does)
             await sendInput({ type: 'text', value })
               .then(() => sendInput({ type: 'key', key: 'Tab' }))
               .then(() => confirmActive('submit', els.manualSubmit));
@@ -813,6 +839,7 @@
       } else {
         els.manualOptions.classList.add('hidden');
         els.optionsGrid.innerHTML = '';
+        els.manualTextInput.disabled = false;
       }
     } else {
       activeManualId = null;
@@ -820,6 +847,9 @@
       els.manualWaitHint.classList.remove('hidden');
       els.manualOptions.classList.add('hidden');
       els.optionsGrid.innerHTML = '';
+      els.manualTextInput.type = 'text';
+      els.manualTextInput.placeholder = 'Type a value, then press Enter';
+      els.manualTextInput.disabled = false;
     }
   }
 
