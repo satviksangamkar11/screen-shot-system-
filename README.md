@@ -550,3 +550,4 @@ New-NetFirewallRule -DisplayName "UI Documentation Engine (port 5173)" `
 - Returning to a branch point **fully reloads** the application — a hash-only URL change is a same-document navigation and would leave a single-page app exactly where it is.
 - Screenshot capture **retries once** after a short wait on CDP timeout — a transient failure no longer silently drops a point from the final document.
 - **No Playwright, no Puppeteer, no CDP library dependency** — the automation layer speaks CDP directly over a WebSocket.
+- **Control deduplication:** `dedupeKeyFor()` assigns a three-tier identity to controls: Tier 1 prefers UI5's application-authored id suffix (survives view renumbering), Tier 2 falls back to the full id, Tier 3 uses section+label. Identity audit (Q3 2026) confirmed this system correctly handles the observed SAP Fiori Elements application; audit artifacts and regression tests are preserved in version control for historical reference.
